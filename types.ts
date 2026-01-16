@@ -1,0 +1,68 @@
+
+export enum DayOfWeek {
+  MONDAY = 'Segunda-feira',
+  TUESDAY = 'Terça-feira',
+  WEDNESDAY = 'Quarta-feira',
+  THURSDAY = 'Quinta-feira',
+  FRIDAY = 'Sexta-feira',
+  SATURDAY = 'Sábado',
+  SUNDAY = 'Domingo'
+}
+
+export interface Neighborhood {
+  name: string;
+  deliveryFee: number;
+}
+
+export interface Customer {
+  phone: string;
+  name: string;
+  cep: string;
+  street: string;
+  number: string;
+  complement: string;
+  neighborhood: string;
+}
+
+export interface Marmita {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  day: DayOfWeek;
+  category: 'Pequena' | 'Média' | 'Grande' | 'Executiva';
+}
+
+export interface OrderItem {
+  marmita: Marmita;
+  quantity: number;
+}
+
+export type OrderStatus = 'Pendente' | 'Preparo' | 'Entrega' | 'Finalizado' | 'Cancelado';
+export type DeliveryMethod = 'Entrega' | 'Retirada';
+
+export interface Order {
+  id: string;
+  customerPhone: string;
+  customerName: string;
+  customerAddress: string;
+  neighborhood: string;
+  deliveryMethod: DeliveryMethod;
+  deliveryFee: number;
+  paymentMethod: 'Pix' | 'Cartão' | 'Dinheiro';
+  items: OrderItem[];
+  subtotal: number;
+  total: number;
+  status: OrderStatus;
+  createdAt: string;
+}
+
+export interface AppConfig {
+  businessWhatsApp: string;
+  businessName: string;
+  autoSaveCustomer: boolean;
+  logoUrl?: string;
+  adminPassword?: string;
+  openingTime?: string; // Formato HH:mm
+  closingTime?: string; // Formato HH:mm
+}
