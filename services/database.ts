@@ -86,7 +86,9 @@ export const db = {
       description: r.descricao,
       price: parseFloat(r.preco),
       day: r.dia_semana,
-      category: r.categoria
+      category: r.categoria,
+      imageUrl: r.imagem_url,
+      prepTime: r.tempo_preparo
     }));
   },
 
@@ -98,7 +100,9 @@ export const db = {
         descricao: marmita.description,
         preco: marmita.price,
         dia_semana: marmita.day,
-        categoria: marmita.category
+        categoria: marmita.category,
+        imagem_url: marmita.imageUrl,
+        tempo_preparo: marmita.prepTime
       }])
       .select()
       .single();
@@ -115,7 +119,9 @@ export const db = {
         descricao: marmita.description,
         preco: marmita.price,
         dia_semana: marmita.day,
-        categoria: marmita.category
+        categoria: marmita.category,
+        imagem_url: marmita.imageUrl,
+        tempo_preparo: marmita.prepTime
       })
       .eq('id', id);
 

@@ -31,6 +31,8 @@ export interface Marmita {
   price: number;
   day: DayOfWeek;
   category: 'Pequena' | 'Média' | 'Grande' | 'Executiva';
+  imageUrl?: string;
+  prepTime?: string;
 }
 
 export interface OrderItem {
