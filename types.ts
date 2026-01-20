@@ -40,7 +40,7 @@ export interface OrderItem {
   quantity: number;
 }
 
-export type OrderStatus = 'Pendente' | 'Preparo' | 'Entrega' | 'Finalizado' | 'Cancelado';
+export type OrderStatus = 'Pendente' | 'Impresso' | 'Preparo' | 'Entrega' | 'Finalizado' | 'Cancelado';
 export type DeliveryMethod = 'Entrega' | 'Retirada';
 
 export interface Order {
@@ -57,6 +57,7 @@ export interface Order {
   total: number;
   status: OrderStatus;
   createdAt: string;
+  observations?: string;
 }
 
 export interface AppConfig {
@@ -67,4 +68,16 @@ export interface AppConfig {
   adminPassword?: string;
   openingTime?: string; // Formato HH:mm
   closingTime?: string; // Formato HH:mm
+  autoPrint?: boolean;
+  printerName?: string;
+  printMode?: 'Apenas PDF' | 'PDF + Impressão';
+}
+
+export interface CashMovement {
+  id: string;
+  tipo: 'Entrada' | 'Saída';
+  categoria: string;
+  descricao?: string;
+  valor: number;
+  criado_em: string;
 }

@@ -1,8 +1,9 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Marmita, DayOfWeek, Neighborhood, Customer, Order, AppConfig, OrderStatus } from '../types';
+import { Marmita, DayOfWeek, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement } from '../types';
 import { DAYS_LIST } from '../constants';
 import { db } from '../services/database';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 type AdminTab = 'pedidos' | 'caixa' | 'menu' | 'bairros' | 'clientes' | 'config';
 
@@ -18,6 +19,12 @@ const Admin: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [movements, setMovements] = useState<CashMovement[]>([]);
+
+  // Estados do Livro Caixa
+  const [movForm, setMovForm] = useState<Omit<CashMovement, 'id' | 'criado_em'>>({
+    tipo: 'Saída', categoria: 'Insumos', descricao: '', valor: 0
+  });
 
   const [globalDate, setGlobalDate] = useState(new Date().toISOString().split('T')[0]);
   const [searchCustomer, setSearchCustomer] = useState('');
@@ -40,6 +47,7 @@ const Admin: React.FC = () => {
   // Modal de Logo
   const [showLogoModal, setShowLogoModal] = useState(false);
   const [tempLogo, setTempLogo] = useState<string | null>(null);
+  const processedOrders = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const init = async () => {
@@ -60,10 +68,64 @@ const Admin: React.FC = () => {
   useEffect(() => {
     if (isAuthorized) {
       refreshData();
-      const interval = setInterval(refreshData, 15000);
+      const interval = setInterval(refreshData, 10000); // Reduzido para 10s para maior agilidade
       return () => clearInterval(interval);
     }
   }, [isAuthorized]);
+
+  // Lógica de Impressão Automática
+  // Lógica de Impressão Automática Reformulada para maior confiabilidade
+  useEffect(() => {
+    const processAutoPrint = async () => {
+      if (config?.autoPrint && orders.length > 0) {
+        const pendingOrders = orders.filter(
+          o => o.status === 'Pendente' && !processedOrders.current.has(o.id)
+        );
+
+        if (pendingOrders.length > 0) {
+          console.log(`Detectados ${pendingOrders.length} novos pedidos para processamento automático.`);
+
+          for (const order of pendingOrders) {
+            // Marca como processado na sessão para evitar loops imediatos
+            processedOrders.current.add(order.id);
+
+            try {
+              // 1. Atualiza o status no Banco e Localmente PRIMEIRO
+              // Isso garante que o pedido não seja detectado de novo se a impressão demorar
+              console.log(`Atualizando status do pedido ${order.id} para 'Impresso'...`);
+              await db.updateOrderStatus(order.id, 'Impresso');
+
+              setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'Impresso' } : o));
+              console.log(`Status do pedido ${order.id} atualizado com sucesso.`);
+
+              // 2. Agora dispara as ações lentas/bloqueantes
+              console.log(`Gerando PDF (Modo: ${config.printMode || 'PDF + Impressão'})...`);
+
+              // Gera o PDF (Download automático)
+              try {
+                await generatePDF(order);
+              } catch (pdfErr) {
+                console.error(`Erro ao gerar PDF do pedido ${order.id}:`, pdfErr);
+              }
+
+              // Dispara a Impressão (Abre janela) SÓ SE estiver no modo completo
+              if (config.printMode !== 'Apenas PDF') {
+                printOrder(order);
+              }
+
+            } catch (statusErr) {
+              console.error(`Falha Crítica ao processar pedido ${order.id}:`, statusErr);
+              // Se falhou o update de status, removemos do processedOrders para tentar de novo no próximo ciclo
+              processedOrders.current.delete(order.id);
+            }
+          }
+        }
+      }
+    };
+
+    processAutoPrint();
+  }, [orders, config?.autoPrint]);
+
 
   const refreshData = async () => {
     try {
@@ -74,6 +136,10 @@ const Admin: React.FC = () => {
       setBairros(Array.isArray(b) ? b : []);
       setOrders(Array.isArray(o) ? o : []);
       setCustomers(Array.isArray(c) ? c : []);
+
+      const movementsData = await db.getCashMovements(globalDate);
+      setMovements(movementsData);
+
       setDbStatus('Online');
     } catch (e) {
       console.error("Erro na sincronização de dados");
@@ -93,29 +159,208 @@ const Admin: React.FC = () => {
   const caixaData = useMemo(() => {
     const safeOrders = Array.isArray(orders) ? orders : [];
     const daily = safeOrders.filter(o => o.createdAt && o.createdAt.startsWith(globalDate) && o.status !== 'Cancelado');
-    const total = daily.reduce((acc, o) => acc + (o.total || 0), 0);
+
+    // Cálculo discriminado
+    const totalEntradas = daily.reduce((acc, o) => acc + (o.total || 0), 0);
+    const totalTaxas = daily.reduce((acc, o) => acc + (o.deliveryFee || 0), 0);
+    const totalProdutos = totalEntradas - totalTaxas;
+
+    // Movimentações manuais (Entradas vs Saídas)
+    const entradasManuais = movements.filter(m => m.tipo === 'Entrada').reduce((acc, m) => acc + m.valor, 0);
+    const saídasManuais = movements.filter(m => m.tipo === 'Saída').reduce((acc, m) => acc + m.valor, 0);
+
+    const saldoReal = totalEntradas + entradasManuais - saídasManuais;
+
     const count = daily.length;
-    const ticketMedio = count > 0 ? total / count : 0;
+    const ticketMedio = count > 0 ? totalEntradas / count : 0;
 
     const sintético = daily.reduce((acc: any, o) => {
       acc[o.paymentMethod] = (acc[o.paymentMethod] || 0) + o.total;
       return acc;
     }, {});
 
-    return { total, count, ticketMedio, sintético, dailyOrders: daily };
-  }, [orders, globalDate]);
+    return {
+      total: totalEntradas,
+      totalTaxas,
+      totalProdutos,
+      entradasManuais,
+      saídasManuais,
+      saldoReal,
+      count,
+      ticketMedio,
+      sintético,
+      dailyOrders: daily
+    };
+  }, [orders, globalDate, movements]);
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 2 * 1024 * 1024) return alert("Arquivo muito grande! Máximo 2MB.");
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const base64 = ev.target?.result as string;
-        setTempLogo(base64);
-      };
-      reader.readAsDataURL(file);
+    // ... (existing code snippet)
+  };
+
+  const handleSaveMovement = async () => {
+    if (movForm.valor <= 0) return alert("Digite um valor válido");
+    try {
+      await db.addCashMovement(movForm);
+      setMovForm({ tipo: 'Saída', categoria: 'Insumos', descricao: '', valor: 0 });
+      refreshData();
+    } catch (e) {
+      alert("Erro ao salvar movimentação");
     }
+  };
+
+  const handleDeleteMovement = async (id: string) => {
+    if (!confirm("Excluir esta movimentação?")) return;
+    try {
+      await db.deleteCashMovement(id);
+      refreshData();
+    } catch (e) {
+      alert("Erro ao excluir");
+    }
+  };
+
+  const generateFinancePDF = async () => {
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
+
+    const margin = 20;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    let y = margin;
+
+    // --- CABEÇALHO ---
+    if (config?.logoUrl) {
+      try {
+        // Tenta adicionar a logo (supondo que seja base64 ou URL acessível)
+        doc.addImage(config.logoUrl, 'PNG', margin, y, 30, 30);
+        y += 35;
+      } catch (e) {
+        console.error("Erro ao incluir logo no PDF:", e);
+      }
+    }
+
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text(config?.businessName || 'Relatório Financeiro', margin, y);
+    y += 10;
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Data do Relatório: ${globalDate}`, margin, y);
+    doc.text(`Gerado em: ${new Date().toLocaleString('pt-BR')}`, margin, y + 5);
+    y += 20;
+
+    // --- SEÇÃO ANALÍTICA: VENDAS ---
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('1. DETALHAMENTO DE VENDAS (ENTRADAS)', margin, y);
+    y += 10;
+
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('ID', margin, y);
+    doc.text('Cliente', margin + 15, y);
+    doc.text('Pagamento', margin + 80, y);
+    doc.text('Taxa', margin + 120, y);
+    doc.text('Total', margin + 150, y);
+    y += 2;
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 6;
+
+    doc.setFont('helvetica', 'normal');
+    caixaData.dailyOrders.forEach((o) => {
+      if (y > 270) { doc.addPage(); y = margin; }
+      doc.text(o.id.slice(-4), margin, y);
+      doc.text(o.customerName.substring(0, 30), margin + 15, y);
+      doc.text(o.paymentMethod, margin + 80, y);
+      doc.text(`R$ ${o.deliveryFee.toFixed(2)}`, margin + 120, y);
+      doc.text(`R$ ${o.total.toFixed(2)}`, margin + 150, y);
+      y += 7;
+    });
+
+    if (caixaData.dailyOrders.length === 0) {
+      doc.text('Nenhuma venda registrada.', margin, y);
+      y += 7;
+    }
+    y += 10;
+
+    // --- SEÇÃO ANALÍTICA: MOVIMENTAÇÕES MANUAIS ---
+    if (y > 250) { doc.addPage(); y = margin; }
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('2. MOVIMENTAÇÕES MANUAIS (LIVRO CAIXA)', margin, y);
+    y += 10;
+
+    doc.setFontSize(9);
+    doc.text('Tipo', margin, y);
+    doc.text('Categoria', margin + 25, y);
+    doc.text('Descrição', margin + 60, y);
+    doc.text('Valor', margin + 150, y);
+    y += 2;
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 6;
+
+    doc.setFont('helvetica', 'normal');
+    movements.forEach((m) => {
+      if (y > 270) { doc.addPage(); y = margin; }
+      doc.setTextColor(m.tipo === 'Entrada' ? '#2e7d32' : '#c62828');
+      doc.text(m.tipo, margin, y);
+      doc.setTextColor(0);
+      doc.text(m.categoria, margin + 25, y);
+      doc.text((m.descricao || '-').substring(0, 40), margin + 60, y);
+      doc.text(`${m.tipo === 'Entrada' ? '+' : '-'} R$ ${m.valor.toFixed(2)}`, margin + 150, y);
+      y += 7;
+    });
+
+    if (movements.length === 0) {
+      doc.text('Nenhum movimento manual registrado.', margin, y);
+      y += 7;
+    }
+    y += 20;
+
+    // --- SEÇÃO SINTÉTICA: RESUMO FINAL ---
+    if (y > 230) { doc.addPage(); y = margin; }
+    doc.setFillColor(245, 245, 245);
+    doc.rect(margin, y, pageWidth - (margin * 2), 55, 'F');
+
+    y += 10;
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('RESUMO FINANCEIRO CONSOLIDADO', margin + 5, y);
+    y += 10;
+
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`(+) Receita Bruta de Vendas:`, margin + 5, y);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`R$ ${caixaData.total.toFixed(2)}`, margin + 145, y);
+    y += 6;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'italic');
+    doc.text(`    (Produtos: R$ ${caixaData.totalProdutos.toFixed(2)} | Taxas: R$ ${caixaData.totalTaxas.toFixed(2)})`, margin + 5, y);
+    y += 8;
+
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`(+) Entradas Manuais Adicionais:`, margin + 5, y);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`R$ ${caixaData.entradasManuais.toFixed(2)}`, margin + 145, y);
+    y += 6;
+
+    doc.text(`(-) Saídas e Despesas Totais:`, margin + 5, y);
+    doc.text(`R$ ${caixaData.saídasManuais.toFixed(2)}`, margin + 145, y);
+    y += 8;
+
+    doc.line(margin + 5, y, pageWidth - margin - 5, y);
+    y += 8;
+
+    doc.setFontSize(14);
+    doc.setTextColor('#1b5e20');
+    doc.text(`SALDO REAL EM CAIXA:`, margin + 5, y);
+    doc.text(`R$ ${caixaData.saldoReal.toFixed(2)}`, margin + 145, y);
+
+    doc.save(`financeiro_detalhado_${globalDate}.pdf`);
   };
 
   const handleMarmitaImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -187,23 +432,19 @@ const Admin: React.FC = () => {
     else alert('Senha Administrativa Inválida');
   };
 
-  const printOrder = (order: Order) => {
-    const win = window.open('', '_blank');
-    if (!win) return;
-
+  const getOrderHtml = (order: Order) => {
     const itemsHtml = Array.isArray(order.items)
       ? order.items.map(i => `<div class="item-row"><span>${i.quantity}x ${i.marmita?.name || 'Item'}</span><span>R$${((i.quantity || 1) * (i.marmita?.price || 0)).toFixed(2)}</span></div>`).join('')
       : '<div>Nenhum item detalhado</div>';
 
     const dateStr = new Date(order.createdAt).toLocaleString('pt-BR');
 
-    // Configura o estilo da impressão para 80mm (papel térmico comum)
-    const content = `
+    return `
       <html>
       <head>
         <title>Pedido #${order.id.slice(-4)}</title>
         <style>
-          body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 5px; font-size: 13px; color: #000; font-weight: bold; }
+          body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 5px; font-size: 13px; color: #000; font-weight: bold; background: #fff; }
           .header { text-align: center; margin-bottom: 10px; }
           .header h3 { margin: 0; font-size: 20px; font-weight: 900; text-transform: uppercase; }
           .header p { margin: 2px 0; font-size: 14px; }
@@ -213,6 +454,7 @@ const Admin: React.FC = () => {
           .item-list { margin: 10px 0; }
           .info-block { margin-bottom: 8px; }
           .item-row { display: flex; justify-content: space-between; margin-bottom: 5px; font-weight: bold; }
+          .obs-box { border: 1px solid #000; padding: 5px; margin-top: 10px; font-size: 11px; }
         </style>
       </head>
       <body>
@@ -248,6 +490,13 @@ const Admin: React.FC = () => {
           ${itemsHtml}
         </div>
 
+        ${order.observations ? `
+          <div class="obs-box">
+            <strong>OBSERVAÇÕES:</strong><br>
+            ${order.observations}
+          </div>
+        ` : ''}
+
         <div class="divider"></div>
 
         <div style="display:flex; justify-content:space-between;">
@@ -274,19 +523,69 @@ const Admin: React.FC = () => {
         <div style="text-align:center; font-size:10px;">
            www.panelasdavanda.com.br
         </div>
-
-        <script>
-          window.onload = function() {
-            window.print();
-            setTimeout(window.close, 500);
-          };
-        </script>
       </body>
       </html>
     `;
+  };
 
+  const printOrder = (order: Order) => {
+    const win = window.open('', '_blank');
+    if (!win) {
+      alert("⚠️ Bloqueador de Pop-ups detectado! Por favor, permita pop-ups para este site para que a impressão automática funcione.");
+      return;
+    }
+
+    const content = getOrderHtml(order);
     win.document.write(content);
+    win.document.write(`
+      <script>
+        window.onload = function() {
+          window.print();
+          setTimeout(window.close, 500);
+        };
+      </script>
+    `);
     win.document.close();
+  };
+
+  const generatePDF = async (order: Order) => {
+    // Cria um iframe invisível para renderizar o exato HTML da impressão
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '100%';
+    iframe.style.bottom = '100%';
+    iframe.style.width = '80mm';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document || iframe.contentDocument;
+    if (!doc) return;
+
+    doc.write(getOrderHtml(order));
+    doc.close();
+
+    // Aguarda fontes e imagens carregarem
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    try {
+      const canvas = await html2canvas(doc.body, {
+        scale: 3,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        width: doc.body.scrollWidth,
+        height: doc.body.scrollHeight
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        unit: 'mm',
+        format: [80, canvas.height * 80 / canvas.width]
+      });
+
+      pdf.addImage(imgData, 'PNG', 0, 0, 80, canvas.height * 80 / canvas.width);
+      pdf.save(`Pedido_${order.id.slice(-4)}.pdf`);
+    } finally {
+      document.body.removeChild(iframe);
+    }
   };
 
   const filteredMenuList = useMemo(() => {
@@ -384,7 +683,11 @@ const Admin: React.FC = () => {
                         <span className="bg-stone-900 text-white text-[9px] px-3 py-1.5 rounded-xl font-black uppercase tracking-tighter">#{order.id.slice(-4)}</span>
                         <span className="text-[10px] font-bold text-stone-400"><i className="far fa-clock mr-1"></i>{new Date(order.createdAt || '').toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
-                      <span className={`text-[9px] font-black px-4 py-1.5 rounded-full border ${order.status === 'Entrega' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-orange-600 text-white border-orange-400'}`}>{order.status}</span>
+                      <span className={`text-[9px] font-black px-4 py-1.5 rounded-full border ${order.status === 'Entrega' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                        order.status === 'Impresso' ? 'bg-purple-600 text-white border-purple-400' :
+                          order.status === 'Pendente' ? 'bg-orange-600 text-white border-orange-400' :
+                            'bg-stone-900 text-white'
+                        }`}>{order.status}</span>
                     </div>
 
                     <h4 className="font-black text-stone-900 text-lg leading-none mb-1">{order.customerName}</h4>
@@ -419,10 +722,17 @@ const Admin: React.FC = () => {
                       </div>
                     </div>
 
+                    {order.observations && (
+                      <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-2xl">
+                        <p className="text-[10px] font-black uppercase text-red-600 mb-1 tracking-widest"><i className="fas fa-comment-dots mr-2"></i>Observações:</p>
+                        <p className="text-xs font-bold text-red-900 leading-relaxed">{order.observations}</p>
+                      </div>
+                    )}
+
                     <div className="flex gap-3">
                       <button onClick={() => printOrder(order)} className="flex-1 bg-white border-2 border-stone-100 py-3 rounded-2xl text-[10px] font-black uppercase hover:bg-stone-50 transition-all shadow-sm"><i className="fas fa-print mr-2"></i>Imprimir</button>
                       <select value={order.status} onChange={e => db.updateOrderStatus(order.id, e.target.value as any).then(refreshData)} className="flex-1 bg-stone-900 text-white py-3 rounded-2xl text-[10px] font-black uppercase outline-none focus:ring-4 ring-orange-500/20 cursor-pointer">
-                        {['Pendente', 'Preparo', 'Entrega', 'Finalizado', 'Cancelado'].map(s => <option key={s} value={s}>{s}</option>)}
+                        {['Pendente', 'Impresso', 'Preparo', 'Entrega', 'Finalizado', 'Cancelado'].map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                     </div>
                   </div>
@@ -460,40 +770,60 @@ const Admin: React.FC = () => {
         )}
 
         {activeTab === 'caixa' && (
-          <div className="space-y-8 animate-fade-in">
-            {/* Header Reduzido */}
-            <div className="flex flex-col md:flex-row justify-between items-center gap-6 border-b border-stone-50 pb-6">
+          <div className="space-y-6 animate-fade-in mb-20">
+            <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-green-500 text-white rounded-xl flex items-center justify-center text-lg shadow-lg">
-                  <i className="fas fa-sack-dollar"></i>
+                <div className="w-12 h-12 bg-green-500 rounded-2xl flex items-center justify-center text-white shadow-lg">
+                  <i className="fas fa-sack-dollar text-2xl"></i>
                 </div>
                 <div>
-                  <h3 className="text-xl font-black uppercase text-stone-800 tracking-tighter">Fluxo de Caixa</h3>
-                  <p className="text-[9px] font-bold text-stone-400 uppercase tracking-widest">Resumo Analítico da Operação</p>
+                  <h3 className="font-black uppercase text-2xl text-stone-900 tracking-tighter">Fluxo de Caixa</h3>
+                  <p className="text-[10px] font-black uppercase text-stone-400 tracking-widest leading-none">Resumo analítico da operação</p>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] font-black uppercase text-stone-400">Data Base:</span>
-                <input type="date" value={globalDate} onChange={e => setGlobalDate(e.target.value)} className="p-3 bg-stone-50 rounded-xl font-black border-2 border-stone-100 outline-none focus:border-orange-500 text-xs shadow-sm" />
+              <div className="flex gap-4">
+                <button
+                  onClick={generateFinancePDF}
+                  className="bg-white border-2 border-stone-100 p-4 rounded-2xl text-stone-500 hover:text-orange-600 hover:border-orange-500 transition-all shadow-sm flex items-center gap-3"
+                >
+                  <i className="fas fa-file-pdf"></i>
+                  <span className="text-[10px] font-black uppercase tracking-widest">Relatório PDF</span>
+                </button>
+                <div className="bg-stone-50 p-4 rounded-3xl border border-stone-100 flex items-center gap-4 shadow-sm">
+                  <span className="text-[10px] font-black uppercase text-stone-400 tracking-widest pl-2">Data Base:</span>
+                  <input
+                    type="date"
+                    value={globalDate}
+                    onChange={(e) => setGlobalDate(e.target.value)}
+                    className="bg-transparent font-black text-stone-700 outline-none cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
 
-            {/* Dash Compacto */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="bg-green-50 p-6 rounded-[2rem] border border-green-100 flex flex-col justify-center">
-                <span className="text-[9px] font-black uppercase text-green-600 mb-1 tracking-widest">Receita do Dia</span>
-                <span className="text-3xl font-black text-green-700">R$ {caixaData.total.toFixed(2)}</span>
+            {/* Dash Compacto Refatorado */}
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <div className="bg-green-50 p-6 rounded-[2rem] border border-green-100 flex flex-col justify-center shadow-sm">
+                <span className="text-[9px] font-black uppercase text-green-600 mb-1 tracking-widest">Saldo Real (Líquido)</span>
+                <span className="text-3xl font-black text-green-700">R$ {caixaData.saldoReal.toFixed(2)}</span>
               </div>
-              <div className="bg-stone-900 p-6 rounded-[2rem] text-white flex flex-col justify-center">
-                <span className="text-[9px] font-black uppercase opacity-60 mb-1 tracking-widest">Pedidos Pagos</span>
-                <span className="text-3xl font-black">{caixaData.count}</span>
+              <div className="bg-stone-900 p-6 rounded-[2rem] text-white flex flex-col justify-center shadow-xl">
+                <span className="text-[9px] font-black uppercase opacity-60 mb-1 tracking-widest">Vendas (Bruto)</span>
+                <span className="text-3xl font-black">R$ {caixaData.total.toFixed(2)}</span>
               </div>
-              <div className="bg-orange-50 p-6 rounded-[2rem] border border-orange-100 flex flex-col justify-center">
-                <span className="text-[9px] font-black uppercase text-orange-600 mb-1 tracking-widest">Ticket Médio</span>
-                <span className="text-3xl font-black text-orange-700">R$ {caixaData.ticketMedio.toFixed(2)}</span>
+              <div className="bg-orange-50 p-6 rounded-[2rem] border border-orange-100 shadow-sm">
+                <span className="text-[9px] font-black uppercase text-orange-600 mb-1 tracking-widest block">Vendas Detalhadas</span>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-bold text-orange-800">Produtos: R$ {caixaData.totalProdutos.toFixed(2)}</span>
+                  <span className="text-xs font-bold text-orange-400">Entrega: R$ {caixaData.totalTaxas.toFixed(2)}</span>
+                </div>
               </div>
-              <div className="bg-blue-50 p-6 rounded-[2rem] border border-blue-100">
-                <span className="text-[9px] font-black uppercase text-blue-600 mb-2 tracking-widest block text-center">Formas de Pagamento</span>
+              <div className="bg-red-50 p-6 rounded-[2rem] border border-red-100 flex flex-col justify-center shadow-sm">
+                <span className="text-[9px] font-black uppercase text-red-600 mb-1 tracking-widest">Saídas (Despesas)</span>
+                <span className="text-2xl font-black text-red-700">- R$ {caixaData.saídasManuais.toFixed(2)}</span>
+              </div>
+              <div className="bg-blue-50 p-6 rounded-[2rem] border border-blue-100 shadow-sm">
+                <span className="text-[9px] font-black uppercase text-blue-600 mb-2 tracking-widest block text-center">Pagamentos</span>
                 <div className="flex justify-around gap-2">
                   {Object.entries(caixaData.sintético).map(([method, val]: any) => (
                     <div key={method} className="text-center">
@@ -505,59 +835,121 @@ const Admin: React.FC = () => {
               </div>
             </div>
 
-            {/* Listagem Analítica de Pedidos do Dia */}
-            <div className="bg-stone-50 rounded-[3rem] border border-stone-100 overflow-hidden">
-              <div className="p-6 bg-white border-b border-stone-100 flex justify-between items-center">
-                <h4 className="text-xs font-black uppercase tracking-[0.2em] text-stone-500">Detalhamento de Entradas (Pedidos Consolidados)</h4>
-                <span className="text-[10px] font-black text-stone-300 uppercase">Apenas pedidos não cancelados</span>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Listagem Analítica de Pedidos */}
+              <div className="lg:col-span-8 bg-stone-50 rounded-[3rem] border border-stone-100 overflow-hidden shadow-sm">
+                <div className="p-6 bg-white border-b border-stone-100 flex justify-between items-center">
+                  <h4 className="text-xs font-black uppercase tracking-[0.2em] text-stone-500">Relatório de Entradas (Vendas)</h4>
+                  <span className="text-[10px] font-black text-stone-300 uppercase">Apenas pedidos não cancelados</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-stone-100/50">
+                        <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100">ID</th>
+                        <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100">Cliente</th>
+                        <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100 text-right">Taxa</th>
+                        <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-100">
+                      {caixaData.dailyOrders.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="p-20 text-center text-stone-300 uppercase font-black tracking-widest text-xs">Sem vendas nesta data</td>
+                        </tr>
+                      ) : caixaData.dailyOrders.map(o => (
+                        <tr key={o.id} className="hover:bg-white transition-colors group">
+                          <td className="p-5 text-[10px] font-black text-stone-400">#{o.id.slice(-4)}</td>
+                          <td className="p-5">
+                            <p className="text-xs font-black text-stone-800 uppercase">{o.customerName}</p>
+                            <p className="text-[9px] text-stone-400 font-bold">{o.paymentMethod}</p>
+                          </td>
+                          <td className="p-5 text-right text-stone-400 text-xs font-bold">R$ {o.deliveryFee.toFixed(2)}</td>
+                          <td className="p-5 text-right text-xs font-black text-stone-900">R$ {o.total.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-stone-100/50">
-                      <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100">ID</th>
-                      <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100">Cliente</th>
-                      <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100 text-center">Status</th>
-                      <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100 text-center">Pagamento</th>
-                      <th className="p-5 text-[10px] font-black text-stone-400 uppercase tracking-widest border-b border-stone-100 text-right">Valor Total</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {caixaData.dailyOrders.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="p-20 text-center text-stone-300 uppercase font-black tracking-widest text-xs">Sem movimentação financeira para esta data</td>
-                      </tr>
-                    ) : caixaData.dailyOrders.map(o => (
-                      <tr key={o.id} className="hover:bg-white transition-colors group">
-                        <td className="p-5">
-                          <span className="text-[10px] font-black text-stone-400 group-hover:text-stone-900 transition-colors">#{o.id.slice(-4)}</span>
-                        </td>
-                        <td className="p-5">
-                          <p className="text-xs font-black text-stone-800 uppercase tracking-tighter">{o.customerName}</p>
-                          <p className="text-[10px] text-stone-400 font-bold">{o.customerPhone}</p>
-                        </td>
-                        <td className="p-5 text-center">
-                          <span className={`text-[9px] font-black px-3 py-1 rounded-full border ${o.status === 'Finalizado' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-orange-50 text-orange-600 border-orange-100'
-                            }`}>
-                            {o.status.toUpperCase()}
+
+              {/* LIVRO CAIXA (MOVIMENTAÇÕES MANUAIS) */}
+              <div className="lg:col-span-4 space-y-6">
+                <div className="bg-white p-8 rounded-[3rem] border-2 border-stone-100 shadow-xl">
+                  <h4 className="text-xs font-black uppercase tracking-[0.2em] text-stone-900 mb-6 flex items-center gap-2">
+                    <i className="fas fa-plus-circle text-orange-500"></i> Lançamento Manual
+                  </h4>
+                  <div className="space-y-4">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setMovForm({ ...movForm, tipo: 'Entrada' })}
+                        className={`flex-1 py-3 rounded-2xl text-[10px] font-black uppercase transition-all ${movForm.tipo === 'Entrada' ? 'bg-green-500 text-white shadow-lg shadow-green-200' : 'bg-stone-50 text-stone-400'}`}
+                      >Entrada</button>
+                      <button
+                        onClick={() => setMovForm({ ...movForm, tipo: 'Saída' })}
+                        className={`flex-1 py-3 rounded-2xl text-[10px] font-black uppercase transition-all ${movForm.tipo === 'Saída' ? 'bg-red-500 text-white shadow-lg shadow-red-200' : 'bg-stone-50 text-stone-400'}`}
+                      >Saída</button>
+                    </div>
+                    <select
+                      value={movForm.categoria}
+                      onChange={e => setMovForm({ ...movForm, categoria: e.target.value })}
+                      className="w-full p-4 bg-stone-50 rounded-2xl border-2 border-transparent focus:border-orange-500 outline-none text-xs font-bold shadow-inner"
+                    >
+                      <option>Insumos</option>
+                      <option>Material Prima</option>
+                      <option>Embalagens</option>
+                      <option>Estorno</option>
+                      <option>Outros</option>
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Descrição (ex: Bife do Dia)"
+                      value={movForm.descricao}
+                      onChange={e => setMovForm({ ...movForm, descricao: e.target.value })}
+                      className="w-full p-4 bg-stone-50 rounded-2xl border-2 border-transparent focus:border-orange-500 outline-none text-xs font-bold shadow-inner"
+                    />
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 font-black text-stone-400 text-xs">R$</span>
+                      <input
+                        type="number"
+                        placeholder="0.00"
+                        value={movForm.valor || ''}
+                        onChange={e => setMovForm({ ...movForm, valor: parseFloat(e.target.value) || 0 })}
+                        className="w-full p-4 pl-10 bg-stone-50 rounded-2xl border-2 border-transparent focus:border-orange-500 outline-none text-xs font-black shadow-inner"
+                      />
+                    </div>
+                    <button
+                      onClick={handleSaveMovement}
+                      className="w-full bg-stone-900 text-white py-4 rounded-2xl text-xs font-black uppercase hover:bg-orange-600 transition-all shadow-lg active:scale-95"
+                    >
+                      Efetivar Lançamento
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-stone-50 rounded-[2.5rem] border border-stone-100 p-6 max-h-[400px] overflow-y-auto shadow-inner">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-stone-400 mb-4 px-2">Movimentos Manuais</h4>
+                  <div className="space-y-3">
+                    {movements.length === 0 ? (
+                      <p className="text-[10px] text-center py-10 text-stone-300 font-bold uppercase">Nenhum movimento manual</p>
+                    ) : movements.map(m => (
+                      <div key={m.id} className="bg-white p-4 rounded-2xl border border-stone-100 flex justify-between items-center group shadow-sm transition-all hover:shadow-md">
+                        <div>
+                          <p className="text-[10px] font-black uppercase text-stone-800">{m.categoria}</p>
+                          <p className="text-[9px] text-stone-400 font-medium">{m.descricao || 'Sem descrição'}</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`text-xs font-black ${m.tipo === 'Entrada' ? 'text-green-500' : 'text-red-500'}`}>
+                            {m.tipo === 'Entrada' ? '+' : '-'} R$ {m.valor.toFixed(2)}
                           </span>
-                        </td>
-                        <td className="p-5 text-center">
-                          <span className="text-[10px] font-black text-stone-500 uppercase">{o.paymentMethod}</span>
-                        </td>
-                        <td className="p-5 text-right">
-                          <span className="text-sm font-black text-stone-900 tracking-tighter">R$ {o.total.toFixed(2)}</span>
-                        </td>
-                      </tr>
+                          <button onClick={() => handleDeleteMovement(m.id)} className="opacity-0 group-hover:opacity-100 text-stone-300 hover:text-red-500 transition-all text-xs">
+                            <i className="fas fa-trash"></i>
+                          </button>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                  <tfoot className="bg-stone-900 text-white">
-                    <tr>
-                      <td colSpan={4} className="p-5 text-right text-[10px] font-black uppercase tracking-widest">Consolidado Total</td>
-                      <td className="p-5 text-right font-black text-xl tracking-tighter">R$ {caixaData.total.toFixed(2)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -855,6 +1247,46 @@ const Admin: React.FC = () => {
                 <div className="md:col-span-2 space-y-3">
                   <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Senha do Administrador</label>
                   <input type="password" value={config.adminPassword || ''} onChange={e => setConfig({ ...config, adminPassword: e.target.value })} className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 tracking-[1em] shadow-sm" />
+                </div>
+
+                <h3 className="md:col-span-2 text-3xl font-black uppercase text-stone-900 flex items-center gap-6 tracking-tighter mt-8">
+                  <div className="bg-green-600 text-white p-5 rounded-[2rem] shadow-xl shadow-green-100"><i className="fas fa-print"></i></div>
+                  Configurações de Impressão
+                </h3>
+
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Impressão Automática</label>
+                  <select
+                    value={config.autoPrint ? 'Sim' : 'Não'}
+                    onChange={e => setConfig({ ...config, autoPrint: e.target.value === 'Sim' })}
+                    className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 shadow-sm"
+                  >
+                    <option value="Não">Não (Manual)</option>
+                    <option value="Sim">Sim (Automática)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Nome da Impressora (Referencial)</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Impressora Térmica"
+                    value={config.printerName || ''}
+                    onChange={e => setConfig({ ...config, printerName: e.target.value })}
+                    className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 shadow-sm"
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Modo de Operação</label>
+                  <select
+                    value={config.printMode || 'PDF + Impressão'}
+                    onChange={e => setConfig({ ...config, printMode: e.target.value as any })}
+                    className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 shadow-sm"
+                  >
+                    <option value="PDF + Impressão">PDF + Abrir Janela de Impressão</option>
+                    <option value="Apenas PDF">Apenas Download (Para Bridge/Sumatra)</option>
+                  </select>
                 </div>
 
                 <button onClick={handleSaveConfig} className="md:col-span-2 w-full bg-stone-900 text-white py-8 rounded-[2.5rem] font-black uppercase shadow-2xl hover:bg-orange-600 transition-all mt-8 text-lg tracking-widest flex items-center justify-center gap-4 group">

@@ -1,5 +1,5 @@
 
-import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus } from '../types';
+import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement } from '../types';
 import { supabase } from '../lib/supabase';
 
 export const db = {
@@ -20,7 +20,10 @@ export const db = {
           logoUrl: '',
           adminPassword: '',
           openingTime: '08:00',
-          closingTime: '14:00'
+          closingTime: '14:00',
+          autoPrint: false,
+          printerName: '',
+          printMode: 'PDF + Impressão'
         } as any;
       }
       throw error;
@@ -34,7 +37,10 @@ export const db = {
       logoUrl: data.url_logo,
       adminPassword: data.senha_admin,
       openingTime: data.horario_abertura,
-      closingTime: data.horario_fechamento
+      closingTime: data.horario_fechamento,
+      autoPrint: data.auto_print,
+      printerName: data.printer_name,
+      printMode: data.print_mode || 'PDF + Impressão'
     };
   },
 
@@ -52,7 +58,10 @@ export const db = {
       url_logo: config.logoUrl,
       senha_admin: config.adminPassword,
       horario_abertura: config.openingTime || '08:00',
-      horario_fechamento: config.closingTime || '14:00'
+      horario_fechamento: config.closingTime || '14:00',
+      auto_print: config.autoPrint,
+      printer_name: config.printerName,
+      print_mode: config.printMode || 'PDF + Impressão'
     };
 
     if (existing) {
@@ -243,6 +252,7 @@ export const db = {
         total: order.total,
         status: order.status,
         itens: order.items,
+        observacoes: order.observations,
         criado_em: order.createdAt || new Date().toISOString()
       }]);
 
@@ -270,7 +280,8 @@ export const db = {
       total: parseFloat(r.total),
       status: r.status,
       createdAt: r.criado_em,
-      items: r.itens
+      items: r.itens,
+      observations: r.observacoes
     }));
   },
 
@@ -301,7 +312,8 @@ export const db = {
       total: parseFloat(data.total),
       status: data.status,
       createdAt: data.criado_em,
-      items: data.itens
+      items: data.itens,
+      observations: data.observacoes
     };
   },
 
@@ -311,6 +323,43 @@ export const db = {
       .update({ status })
       .eq('id', id);
 
+    if (error) throw error;
+    return { success: true };
+  },
+
+  // FLUXO DE CAIXA
+  getCashMovements: async (date: string): Promise<CashMovement[]> => {
+    const { data, error } = await supabase
+      .from('fluxo_caixa')
+      .select('*')
+      .gte('criado_em', `${date}T00:00:00Z`)
+      .lte('criado_em', `${date}T23:59:59Z`)
+      .order('criado_em', { ascending: false });
+
+    if (error) throw error;
+    return (data || []).map((d: any) => ({
+      id: d.id,
+      tipo: d.tipo,
+      categoria: d.categoria,
+      descricao: d.descricao,
+      valor: d.valor,
+      criado_em: d.criado_em
+    }));
+  },
+
+  addCashMovement: async (movement: Omit<CashMovement, 'id' | 'criado_em'>) => {
+    const { error } = await supabase
+      .from('fluxo_caixa')
+      .insert([movement]);
+    if (error) throw error;
+    return { success: true };
+  },
+
+  deleteCashMovement: async (id: string) => {
+    const { error } = await supabase
+      .from('fluxo_caixa')
+      .delete()
+      .eq('id', id);
     if (error) throw error;
     return { success: true };
   },

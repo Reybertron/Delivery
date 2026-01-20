@@ -29,7 +29,8 @@ const Home: React.FC = () => {
     number: '',
     complement: '',
     neighborhood: '',
-    payment: 'Pix' as const
+    payment: 'Pix' as const,
+    observations: ''
   });
 
   // LOGICA SENIOR: Verificação de Horário
@@ -149,7 +150,7 @@ const Home: React.FC = () => {
 
   const handleCheckout = async () => {
     if (!isBusinessOpen) return;
-    const { phone, name, street, number, neighborhood, payment, cep, complement } = customerInfo;
+    const { phone, name, street, number, neighborhood, payment, cep, complement, observations } = customerInfo;
 
     if (!phone || !name || cart.length === 0) return alert('Por favor, preencha seu Nome, WhatsApp e escolha os itens!');
     if (deliveryMethod === 'Entrega' && (!street || !number || !neighborhood)) return alert('Para entrega, precisamos do endereço completo e bairro!');
@@ -179,6 +180,7 @@ const Home: React.FC = () => {
         subtotal,
         total,
         status: 'Pendente',
+        observations,
         createdAt: new Date().toISOString()
       };
 
@@ -455,6 +457,17 @@ const Home: React.FC = () => {
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="pt-4">
+                <label className="text-[10px] font-black uppercase text-stone-400 ml-4 tracking-widest">Observações do Pedido</label>
+                <textarea
+                  placeholder="Ex: Tirar cebola, ponto da carne, etc..."
+                  value={customerInfo.observations}
+                  onChange={e => setCustomerInfo({ ...customerInfo, observations: e.target.value })}
+                  rows={2}
+                  className="w-full mt-2 p-4 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:border-orange-500 outline-none font-medium resize-none"
+                />
               </div>
             </div>
 
