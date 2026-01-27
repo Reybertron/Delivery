@@ -4,6 +4,9 @@ import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import Admin from './pages/Admin';
+import DelivererLogin from './pages/DelivererLogin';
+import DelivererDashboard from './pages/DelivererDashboard';
+import { isNative } from './lib/platform';
 
 const App: React.FC = () => {
   return (
@@ -13,10 +16,14 @@ const App: React.FC = () => {
         <main className="flex-grow bg-stone-50 pb-20">
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/admin" element={<Admin />} />
+            <Route path="/delivery/login" element={<DelivererLogin />} />
+            <Route path="/delivery/dashboard" element={<DelivererDashboard />} />
+            {!isNative && <Route path="/admin" element={<Admin />} />}
+            {/* Se tentar acessar /admin no mobile, volta para a Home */}
+            {isNative && <Route path="/admin" element={<Home />} />}
           </Routes>
         </main>
-        
+
         <footer className="bg-stone-900 text-stone-400 py-10">
           <div className="max-w-7xl mx-auto px-4 text-center">
             <div className="flex justify-center space-x-6 mb-6">

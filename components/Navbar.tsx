@@ -3,12 +3,13 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../services/database';
 import { AppConfig } from '../types';
+import { isNative } from '../lib/platform';
 
 const Navbar: React.FC = () => {
   const [config, setConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
-    db.getConfig().then(setConfig).catch(() => {});
+    db.getConfig().then(setConfig).catch(() => { });
   }, []);
 
   if (!config) return <nav className="h-16 bg-orange-600 animate-pulse"></nav>;
@@ -31,18 +32,20 @@ const Navbar: React.FC = () => {
           </Link>
           <div className="flex space-x-4 md:space-x-6 items-center">
             <Link to="/" className="hover:text-orange-200 transition-colors font-bold text-xs uppercase tracking-widest">Cardápio</Link>
-            
+
             {/* 
                 LOGICA SENIOR: 
                 hidden -> Esconde por padrão (mobile)
                 md:block -> Mostra a partir de telas médias (Desktop/Tablet)
             */}
-            <Link 
-              to="/admin" 
-              className="hidden md:block bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition-all font-black text-[10px] uppercase tracking-[0.2em] border border-white/10"
-            >
-              Painel ADM
-            </Link>
+            {!isNative && (
+              <Link
+                to="/admin"
+                className="hidden md:block bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition-all font-black text-[10px] uppercase tracking-[0.2em] border border-white/10"
+              >
+                Painel ADM
+              </Link>
+            )}
           </div>
         </div>
       </div>

@@ -1,5 +1,5 @@
 
-import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement } from '../types';
+import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement, Deliverer } from '../types';
 import { supabase } from '../lib/supabase';
 
 export const db = {
@@ -40,7 +40,9 @@ export const db = {
       closingTime: data.horario_fechamento,
       autoPrint: data.auto_print,
       printerName: data.printer_name,
-      printMode: data.print_mode || 'PDF + Impressão'
+      printMode: data.print_mode || 'PDF + Impressão',
+      mercadoPagoEnabled: data.mercadopago_ativo,
+      mercadoPagoPublicKey: data.mercadopago_token_publico
     };
   },
 
@@ -61,7 +63,9 @@ export const db = {
       horario_fechamento: config.closingTime || '14:00',
       auto_print: config.autoPrint,
       printer_name: config.printerName,
-      print_mode: config.printMode || 'PDF + Impressão'
+      print_mode: config.printMode || 'PDF + Impressão',
+      mercadopago_ativo: config.mercadoPagoEnabled || false,
+      mercadopago_token_publico: config.mercadoPagoPublicKey || ''
     };
 
     if (existing) {
@@ -280,8 +284,13 @@ export const db = {
       total: parseFloat(r.total),
       status: r.status,
       createdAt: r.criado_em,
-      items: r.itens,
-      observations: r.observacoes
+      items: typeof r.itens === 'string' ? JSON.parse(r.itens) : r.itens,
+      observations: r.observacoes,
+      delivererId: r.entregador_id,
+      delivererName: r.entregador_nome,
+      assignedAt: r.atribuido_em,
+      deliveredAt: r.entregue_em,
+      estimatedTime: r.tempo_estimado
     }));
   },
 
@@ -312,8 +321,10 @@ export const db = {
       total: parseFloat(data.total),
       status: data.status,
       createdAt: data.criado_em,
-      items: data.itens,
-      observations: data.observacoes
+      items: typeof data.itens === 'string' ? JSON.parse(data.itens) : data.itens,
+      observations: data.observacoes,
+      delivererId: data.entregador_id,
+      delivererName: data.entregador_nome
     };
   },
 
@@ -362,6 +373,183 @@ export const db = {
       .eq('id', id);
     if (error) throw error;
     return { success: true };
+  },
+
+  // ENTREGADORES
+  getDeliverers: async (): Promise<Deliverer[]> => {
+    const { data, error } = await supabase
+      .from('entregadores')
+      .select('*')
+      .eq('ativo', true)
+      .order('nome', { ascending: true });
+
+    if (error) throw error;
+
+    return (data || []).map((r: any) => ({
+      id: r.id,
+      name: r.nome,
+      phone: r.telefone,
+      cpf: r.cpf,
+      vehicleType: r.tipo_veiculo,
+      vehicleModel: r.modelo_veiculo,
+      vehiclePlate: r.placa_veiculo,
+      vehicleColor: r.cor_veiculo,
+      status: r.status,
+      maxOrders: r.max_pedidos,
+      rating: r.avaliacao ? parseFloat(r.avaliacao) : undefined,
+      totalDeliveries: r.total_entregas,
+      photoUrl: r.foto_url,
+      createdAt: r.criado_em,
+      isActive: r.ativo,
+      password: r.senha,
+      lastLogin: r.ultimo_login
+    }));
+  },
+
+  saveDeliverer: async (deliverer: Omit<Deliverer, 'id' | 'createdAt' | 'totalDeliveries' | 'rating'>) => {
+    const payload = {
+      nome: deliverer.name,
+      telefone: deliverer.phone,
+      cpf: deliverer.cpf,
+      tipo_veiculo: deliverer.vehicleType,
+      modelo_veiculo: deliverer.vehicleModel,
+      placa_veiculo: deliverer.vehiclePlate,
+      cor_veiculo: deliverer.vehicleColor,
+      status: deliverer.status,
+      max_pedidos: deliverer.maxOrders,
+      foto_url: deliverer.photoUrl,
+      ativo: deliverer.isActive,
+      senha: deliverer.password
+    };
+
+    const { error } = await supabase
+      .from('entregadores')
+      .insert([payload]);
+
+    if (error) throw error;
+    return { success: true };
+  },
+
+  updateDeliverer: async (id: string, deliverer: Partial<Deliverer>) => {
+    const payload: any = {};
+    if (deliverer.name) payload.nome = deliverer.name;
+    if (deliverer.phone) payload.telefone = deliverer.phone;
+    if (deliverer.vehicleType) payload.tipo_veiculo = deliverer.vehicleType;
+    if (deliverer.vehicleModel) payload.modelo_veiculo = deliverer.vehicleModel;
+    if (deliverer.vehiclePlate) payload.placa_veiculo = deliverer.vehiclePlate;
+    if (deliverer.vehicleColor !== undefined) payload.cor_veiculo = deliverer.vehicleColor;
+    if (deliverer.status) payload.status = deliverer.status;
+    if (deliverer.maxOrders) payload.max_pedidos = deliverer.maxOrders;
+    if (deliverer.photoUrl !== undefined) payload.foto_url = deliverer.photoUrl;
+    if (deliverer.isActive !== undefined) payload.ativo = deliverer.isActive;
+    if (deliverer.password !== undefined) payload.senha = deliverer.password;
+    if (deliverer.lastLogin !== undefined) payload.ultimo_login = deliverer.lastLogin;
+
+    const { error } = await supabase
+      .from('entregadores')
+      .update(payload)
+      .eq('id', id);
+
+    if (error) throw error;
+    return { success: true };
+  },
+
+  deleteDeliverer: async (id: string) => {
+    // Soft delete
+    const { error } = await supabase
+      .from('entregadores')
+      .update({ ativo: false, status: 'Offline' })
+      .eq('id', id);
+
+    if (error) throw error;
+    return { success: true };
+  },
+
+  assignDeliverer: async (orderId: string, delivererId: string, delivererName: string) => {
+    const { error } = await supabase
+      .from('pedidos')
+      .update({
+        entregador_id: delivererId,
+        entregador_nome: delivererName,
+        atribuido_em: new Date().toISOString()
+      })
+      .eq('id', orderId);
+
+    if (error) throw error;
+    return { success: true };
+  },
+
+  getDelivererOrders: async (delivererId: string): Promise<Order[]> => {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('entregador_id', delivererId)
+      .in('status', ['Entrega', 'Preparo'])
+      .order('criado_em', { ascending: false });
+
+    if (error) throw error;
+
+    return (data || []).map((r: any) => ({
+      id: r.id,
+      customerPhone: r.telefone_cliente,
+      customerName: r.nome_cliente,
+      customerAddress: r.endereco_completo,
+      neighborhood: r.bairro,
+      deliveryMethod: r.metodo_entrega,
+      deliveryFee: parseFloat(r.taxa_entrega),
+      paymentMethod: r.metodo_pagamento,
+      items: typeof r.itens === 'string' ? JSON.parse(r.itens) : r.itens,
+      subtotal: parseFloat(r.subtotal),
+      total: parseFloat(r.total),
+      status: r.status,
+      createdAt: r.criado_em,
+      observations: r.observacoes,
+      delivererId: r.entregador_id,
+      delivererName: r.entregador_nome,
+      assignedAt: r.atribuido_em,
+      deliveredAt: r.entregue_em,
+      estimatedTime: r.tempo_estimado
+    }));
+  },
+
+  loginDeliverer: async (phone: string, password: string): Promise<Deliverer | null> => {
+    const { data, error } = await supabase
+      .from('entregadores')
+      .select('*')
+      .eq('telefone', phone)
+      .eq('senha', password)
+      .eq('ativo', true)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null;
+      throw error;
+    }
+
+    const deliverer: Deliverer = {
+      id: data.id,
+      name: data.nome,
+      phone: data.telefone,
+      cpf: data.cpf,
+      vehicleType: data.tipo_veiculo,
+      vehicleModel: data.modelo_veiculo,
+      vehiclePlate: data.placa_veiculo,
+      vehicleColor: data.cor_veiculo,
+      status: data.status,
+      maxOrders: data.max_pedidos,
+      rating: data.avaliacao ? parseFloat(data.avaliacao) : undefined,
+      totalDeliveries: data.total_entregas,
+      photoUrl: data.foto_url,
+      createdAt: data.criado_em,
+      isActive: data.ativo,
+      password: data.senha,
+      lastLogin: data.ultimo_login
+    };
+
+    // Atualiza o último login
+    await db.updateDeliverer(deliverer.id, { lastLogin: new Date().toISOString() });
+
+    return deliverer;
   },
 
   // Backup temporariamente desabilitado ou reimplementar se necessário

@@ -58,6 +58,12 @@ export interface Order {
   status: OrderStatus;
   createdAt: string;
   observations?: string;
+  // Campos de Entregador
+  delivererId?: string;
+  delivererName?: string;
+  assignedAt?: string;
+  deliveredAt?: string;
+  estimatedTime?: number; // minutos
 }
 
 export interface AppConfig {
@@ -71,6 +77,8 @@ export interface AppConfig {
   autoPrint?: boolean;
   printerName?: string;
   printMode?: 'Apenas PDF' | 'PDF + Impressão';
+  mercadoPagoEnabled?: boolean;
+  mercadoPagoPublicKey?: string;
 }
 
 export interface CashMovement {
@@ -80,4 +88,28 @@ export interface CashMovement {
   descricao?: string;
   valor: number;
   criado_em: string;
+}
+
+// SISTEMA DE ENTREGADORES
+export type VehicleType = 'Moto' | 'Carro' | 'Bicicleta' | 'A pé';
+export type DelivererStatus = 'Disponível' | 'Em Rota' | 'Indisponível' | 'Offline';
+
+export interface Deliverer {
+  id: string;
+  name: string;
+  phone: string;
+  cpf: string;
+  vehicleType: VehicleType;
+  vehicleModel: string;
+  vehiclePlate: string;
+  vehicleColor?: string;
+  status: DelivererStatus;
+  maxOrders: number;
+  rating?: number;
+  totalDeliveries: number;
+  photoUrl?: string;
+  createdAt: string;
+  isActive: boolean;
+  password?: string;
+  lastLogin?: string;
 }

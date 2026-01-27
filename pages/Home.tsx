@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Marmita, DayOfWeek, OrderItem, Order, Neighborhood, Customer, DeliveryMethod, OrderStatus, AppConfig } from '../types';
 import { DAYS_LIST } from '../constants';
@@ -32,6 +32,8 @@ const Home: React.FC = () => {
     payment: 'Pix' as const,
     observations: ''
   });
+
+  const phoneInputRef = useRef<HTMLInputElement>(null);
 
   // LOGICA SENIOR: Verificação de Horário
   const isBusinessOpen = useMemo(() => {
@@ -133,6 +135,12 @@ const Home: React.FC = () => {
       if (existing) return prev.map(item => item.marmita.id === marmita.id ? { ...item, quantity: item.quantity + 1 } : item);
       return [...prev, { marmita, quantity: 1 }];
     });
+
+    // Auto-direcionamento para o campo WhatsApp após um curto delay (para garantir renderização)
+    setTimeout(() => {
+      phoneInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      phoneInputRef.current?.focus();
+    }, 100);
   };
 
   const updateCartQuantity = (id: string, delta: number) => {
@@ -190,12 +198,27 @@ const Home: React.FC = () => {
       setSearchPhone(cleanPhone);
       handleTrackOrder(cleanPhone);
 
+      // RESET COMPLETO DO FORMULÁRIO PARA PRÓXIMO PEDIDO
       setCart([]);
+      setCustomerInfo({
+        phone: '',
+        name: '',
+        cep: '',
+        street: '',
+        number: '',
+        complement: '',
+        neighborhood: '',
+        payment: 'Pix',
+        observations: ''
+      });
+      setDeliveryMethod('Entrega');
+
       if (config) window.open(generateWhatsAppLink(order, config), '_blank');
     } catch (e: any) {
       alert("Erro ao processar: " + e.message);
     }
   };
+
 
   const handleTrackOrder = async (phoneToSearch?: string) => {
     const phone = (phoneToSearch || searchPhone).replace(/\D/g, '');
@@ -396,7 +419,14 @@ const Home: React.FC = () => {
               <div className="grid grid-cols-1 gap-4">
                 <div className="relative">
                   <i className="fab fa-whatsapp absolute left-4 top-1/2 -translate-y-1/2 text-stone-300"></i>
-                  <input type="tel" placeholder="Seu WhatsApp" value={customerInfo.phone} onChange={e => setCustomerInfo({ ...customerInfo, phone: e.target.value })} className="w-full pl-12 pr-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:border-orange-500 outline-none font-bold" />
+                  <input
+                    type="tel"
+                    ref={phoneInputRef}
+                    placeholder="Seu WhatsApp"
+                    value={customerInfo.phone}
+                    onChange={e => setCustomerInfo({ ...customerInfo, phone: e.target.value })}
+                    className="w-full pl-12 pr-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:border-orange-500 outline-none font-bold"
+                  />
                 </div>
                 <div className="relative">
                   <i className="fas fa-user absolute left-4 top-1/2 -translate-y-1/2 text-stone-300"></i>
