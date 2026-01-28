@@ -126,7 +126,7 @@ const Home: React.FC = () => {
     return b ? b.deliveryFee : 0;
   }, [customerInfo.neighborhood, bairros, deliveryMethod]);
 
-  const filteredMenu = useMemo(() => menu.filter(m => m.day === todayDay), [menu, todayDay]);
+  const filteredMenu = useMemo(() => menu.filter(m => m.day === todayDay && m.available), [menu, todayDay]);
 
   const addToCart = (marmita: Marmita) => {
     if (!isBusinessOpen) return;

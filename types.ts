@@ -33,6 +33,7 @@ export interface Marmita {
   category: 'Pequena' | 'Média' | 'Grande' | 'Executiva';
   imageUrl?: string;
   prepTime?: string;
+  available: boolean;
 }
 
 export interface OrderItem {

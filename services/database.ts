@@ -101,7 +101,8 @@ export const db = {
       day: r.dia_semana,
       category: r.categoria,
       imageUrl: r.imagem_url,
-      prepTime: r.tempo_preparo
+      prepTime: r.tempo_preparo,
+      available: r.disponivel !== false // Default to true if null
     }));
   },
 
@@ -115,7 +116,8 @@ export const db = {
         dia_semana: marmita.day,
         categoria: marmita.category,
         imagem_url: marmita.imageUrl,
-        tempo_preparo: marmita.prepTime
+        tempo_preparo: marmita.prepTime,
+        disponivel: marmita.available
       }])
       .select()
       .single();
@@ -134,7 +136,8 @@ export const db = {
         dia_semana: marmita.day,
         categoria: marmita.category,
         imagem_url: marmita.imageUrl,
-        tempo_preparo: marmita.prepTime
+        tempo_preparo: marmita.prepTime,
+        disponivel: marmita.available
       })
       .eq('id', id);
 

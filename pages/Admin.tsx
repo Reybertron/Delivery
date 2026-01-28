@@ -33,7 +33,7 @@ const Admin: React.FC = () => {
   // Estados do Menu
   const [editingMarmita, setEditingMarmita] = useState<Marmita | null>(null);
   const [marmitaForm, setMarmitaForm] = useState<Omit<Marmita, 'id'>>({
-    name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: ''
+    name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: '', available: true
   });
   const [menuDayFilter, setMenuDayFilter] = useState<DayOfWeek | 'Todos'>('Todos');
 
@@ -410,7 +410,7 @@ const Admin: React.FC = () => {
     try {
       if (editingMarmita) await db.updateMarmita(editingMarmita.id, marmitaForm);
       else await db.saveMarmita(marmitaForm);
-      setMarmitaForm({ name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: '' });
+      setMarmitaForm({ name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: '', available: true });
       setEditingMarmita(null);
       refreshData();
       alert("Prato salvo com sucesso!");
@@ -1154,6 +1154,23 @@ const Admin: React.FC = () => {
                   </select>
                 </div>
 
+                <div className="bg-white p-6 rounded-3xl border-2 border-white shadow-sm">
+                  <label className="flex items-center gap-3 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={marmitaForm.available}
+                      onChange={e => setMarmitaForm({ ...marmitaForm, available: e.target.checked })}
+                      className="w-5 h-5 accent-orange-500 rounded-lg"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black uppercase text-stone-400 leading-none mb-1">Status de Disponibilidade</span>
+                      <span className={`text-xs font-black uppercase tracking-tight ${marmitaForm.available ? 'text-green-600' : 'text-stone-400'}`}>
+                        {marmitaForm.available ? 'Disponível no Cardápio' : 'Indisponível (Ocultar)'}
+                      </span>
+                    </div>
+                  </label>
+                </div>
+
                 <button onClick={handleSaveMarmita} className="w-full bg-stone-900 text-white py-7 rounded-[2.5rem] font-black uppercase tracking-[0.2em] shadow-2xl hover:bg-orange-600 transition-all transform hover:scale-[1.02] active:scale-95 mt-4 flex items-center justify-center gap-4 text-xs">
                   <i className={`fas ${editingMarmita ? 'fa-save' : 'fa-plus-circle'} text-xl`}></i>
                   {editingMarmita ? 'Salvar Alterações' : 'Adicionar ao Cardápio'}
@@ -1161,7 +1178,7 @@ const Admin: React.FC = () => {
                 {editingMarmita && (
                   <button onClick={() => {
                     setEditingMarmita(null);
-                    setMarmitaForm({ name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: '' });
+                    setMarmitaForm({ name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: '', available: true });
                   }} className="w-full text-[10px] font-black text-stone-400 uppercase tracking-[0.2em]">
                     Cancelar Edição
                   </button>
@@ -1193,6 +1210,9 @@ const Admin: React.FC = () => {
                     <div className="flex justify-between items-start mb-4">
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-2">
+                          <span className={`px-2 py-1 rounded-lg text-[8px] font-black uppercase text-white ${m.available ? 'bg-green-500' : 'bg-red-500'}`}>
+                            {m.available ? 'Online' : 'Offline'}
+                          </span>
                           <span className="text-[9px] font-black uppercase text-orange-600 bg-orange-50 px-4 py-1.5 rounded-full border border-orange-100">
                             {m.category}
                           </span>
@@ -1294,89 +1314,7 @@ const Admin: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'entregadores' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-16 animate-fade-in">
-            <div className="space-y-8">
-              <h3 className="font-black uppercase text-2xl text-stone-900 tracking-tighter">{editingDeliverer ? 'Editar Entregador' : 'Novo Entregador'}</h3>
-              <div className="space-y-4 bg-stone-50 p-8 rounded-[3rem] border border-stone-100 shadow-sm">
-                <div className="space-y-1">
-                  <label className="text-[9px] font-black uppercase text-stone-400 ml-4">Nome Completo</label>
-                  <input type="text" placeholder="Ex: João Silva" value={delivererForm.name} onChange={e => setDelivererForm({ ...delivererForm, name: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-white outline-none font-bold focus:border-blue-500 shadow-sm transition-all" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase text-stone-400 ml-4">WhatsApp</label>
-                    <input type="text" placeholder="119..." value={delivererForm.phone} onChange={e => setDelivererForm({ ...delivererForm, phone: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-white outline-none font-bold focus:border-blue-500 shadow-sm" />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase text-stone-400 ml-4">CPF</label>
-                    <input type="text" placeholder="000..." value={delivererForm.cpf} onChange={e => setDelivererForm({ ...delivererForm, cpf: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-white outline-none font-bold focus:border-blue-500 shadow-sm" />
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[9px] font-black uppercase text-stone-400 ml-4">Tipo de Veículo</label>
-                  <select value={delivererForm.vehicleType} onChange={e => setDelivererForm({ ...delivererForm, vehicleType: e.target.value as VehicleType })} className="w-full p-4 rounded-2xl border-2 border-white outline-none font-bold shadow-sm appearance-none bg-white">
-                    {['Moto', 'Carro', 'Bicicleta', 'A pé'].map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase text-stone-400 ml-4">Modelo</label>
-                    <input type="text" placeholder="Ex: CG 160" value={delivererForm.vehicleModel} onChange={e => setDelivererForm({ ...delivererForm, vehicleModel: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-white outline-none font-bold focus:border-blue-500 shadow-sm" />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase text-stone-400 ml-4">Placa</label>
-                    <input type="text" placeholder="ABC-1234" value={delivererForm.vehiclePlate} onChange={e => setDelivererForm({ ...delivererForm, vehiclePlate: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-white outline-none font-bold focus:border-blue-500 shadow-sm" />
-                  </div>
-                </div>
-                <button onClick={handleSaveDeliverer} className="w-full bg-stone-900 text-white py-6 rounded-[2rem] font-black uppercase tracking-widest shadow-xl hover:bg-blue-600 transition-all mt-4 flex items-center justify-center gap-3">
-                  <i className={`fas ${editingDeliverer ? 'fa-save' : 'fa-plus-circle'}`}></i>
-                  {editingDeliverer ? 'Salvar Alterações' : 'Cadastrar Entregador'}
-                </button>
-                {editingDeliverer && (
-                  <button onClick={() => { setEditingDeliverer(null); setDelivererForm({ name: '', phone: '', cpf: '', vehicleType: 'Moto', vehicleModel: '', vehiclePlate: '', vehicleColor: '', status: 'Disponível', maxOrders: 3, photoUrl: '', isActive: true }); }} className="w-full text-[9px] font-black text-stone-400 uppercase">Cancelar</button>
-                )}
-              </div>
-            </div>
 
-            <div className="lg:col-span-2 space-y-6">
-              <h3 className="font-black uppercase text-2xl text-stone-900 tracking-tighter">Equipe de Entrega</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {deliverers.length === 0 ? (
-                  <div className="col-span-full py-20 text-center text-stone-200 uppercase font-black">Nenhum entregador cadastrado</div>
-                ) : deliverers.map(d => (
-                  <div key={d.id} className="p-8 bg-stone-50 rounded-[3rem] border border-stone-100 hover:shadow-xl transition-all group relative">
-                    <div className="flex justify-between items-start mb-6">
-                      <div className="flex items-center gap-4">
-                        <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center text-blue-600 text-2xl shadow-inner">
-                          {d.photoUrl ? <img src={d.photoUrl} className="w-full h-full object-cover rounded-2xl" /> : <i className="fas fa-motorcycle"></i>}
-                        </div>
-                        <div>
-                          <h4 className="font-black text-stone-800 text-lg leading-tight uppercase tracking-tighter">{d.name}</h4>
-                          <span className={`text-[8px] font-black px-3 py-1 rounded-full uppercase ${d.status === 'Disponível' ? 'bg-green-100 text-green-600' : 'bg-orange-100 text-orange-600'}`}>{d.status}</span>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => { setEditingDeliverer(d); setDelivererForm(d); }} className="w-10 h-10 bg-white text-blue-500 rounded-xl flex items-center justify-center shadow-sm hover:bg-blue-600 hover:text-white transition-all"><i className="fas fa-edit"></i></button>
-                        <button onClick={() => handleDeleteDeliverer(d.id)} className="w-10 h-10 bg-white text-red-400 rounded-xl flex items-center justify-center shadow-sm hover:bg-red-600 hover:text-white transition-all"><i className="fas fa-trash"></i></button>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4 border-t border-stone-200/50 pt-4">
-                      <div>
-                        <p className="text-[8px] font-black text-stone-400 uppercase mb-1">Veículo</p>
-                        <p className="text-[10px] font-bold text-stone-700">{d.vehicleType} - {d.vehicleModel}</p>
-                      </div>
-                      <div>
-                        <p className="text-[8px] font-black text-stone-400 uppercase mb-1">Placa</p>
-                        <p className="text-[10px] font-bold text-stone-700">{d.vehiclePlate}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
 
         {activeTab === 'config' && config && (
           <div className="max-w-4xl mx-auto space-y-12 animate-fade-in">
@@ -1520,253 +1458,252 @@ const Admin: React.FC = () => {
             </div>
           </div>
         )}
-      </div>
 
-
-      {/* ABA DE ENTREGADORES */}
-      {activeTab === 'entregadores' && (
-        <div className="space-y-8 animate-fade-in">
-          <div className="flex flex-col md:flex-row justify-between items-center border-b border-stone-100 pb-8 gap-4">
-            <h3 className="text-2xl font-black uppercase text-stone-800 tracking-tight flex items-center gap-3">
-              <i className="fas fa-motorcycle text-orange-500"></i>
-              Gestão de Entregadores
-            </h3>
-            <div className="bg-stone-900 text-white px-5 py-2 rounded-full text-xs font-black uppercase tracking-widest">
-              {deliverers.filter(d => d.isActive).length} Ativos
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* FORMULÁRIO DE CADASTRO */}
-            <div className="lg:col-span-1 space-y-6">
-              <div className="bg-stone-50 p-8 rounded-[2.5rem] border border-stone-100 sticky top-8">
-                <h4 className="text-lg font-black uppercase text-stone-900 mb-6 flex items-center gap-2">
-                  {editingDeliverer ? <i className="fas fa-edit text-blue-500"></i> : <i className="fas fa-plus-circle text-green-500"></i>}
-                  {editingDeliverer ? 'Editar Entregador' : 'Novo Entregador'}
-                </h4>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Nome Completo</label>
-                    <input
-                      type="text"
-                      value={delivererForm.name}
-                      onChange={e => setDelivererForm({ ...delivererForm, name: e.target.value })}
-                      className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                      placeholder="Ex: João da Silva"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Telefone / WhatsApp</label>
-                    <input
-                      type="text"
-                      value={delivererForm.phone}
-                      onChange={e => setDelivererForm({ ...delivererForm, phone: e.target.value })}
-                      className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                      placeholder="(XX) XXXXX-XXXX"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">CPF</label>
-                    <input
-                      type="text"
-                      value={delivererForm.cpf}
-                      onChange={e => setDelivererForm({ ...delivererForm, cpf: e.target.value })}
-                      className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                      placeholder="000.000.000-00"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Senha de Acesso</label>
-                    <input
-                      type="text"
-                      value={delivererForm.password || ''}
-                      onChange={e => setDelivererForm({ ...delivererForm, password: e.target.value })}
-                      className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                      placeholder="Defina uma senha"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Veículo</label>
-                      <select
-                        value={delivererForm.vehicleType}
-                        onChange={e => setDelivererForm({ ...delivererForm, vehicleType: e.target.value as VehicleType })}
-                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm appearance-none"
-                      >
-                        <option value="Moto">Moto</option>
-                        <option value="Carro">Carro</option>
-                        <option value="Bicicleta">Bike</option>
-                        <option value="A pé">A pé</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Placa</label>
-                      <input
-                        type="text"
-                        value={delivererForm.vehiclePlate}
-                        onChange={e => setDelivererForm({ ...delivererForm, vehiclePlate: e.target.value })}
-                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                        placeholder="ABC-1234"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Modelo</label>
-                      <input
-                        type="text"
-                        value={delivererForm.vehicleModel}
-                        onChange={e => setDelivererForm({ ...delivererForm, vehicleModel: e.target.value })}
-                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                        placeholder="Ex: Honda CG"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Cor</label>
-                      <input
-                        type="text"
-                        value={delivererForm.vehicleColor}
-                        onChange={e => setDelivererForm({ ...delivererForm, vehicleColor: e.target.value })}
-                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
-                        placeholder="Ex: Vermelha"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Status Inicial</label>
-                    <select
-                      value={delivererForm.status}
-                      onChange={e => setDelivererForm({ ...delivererForm, status: e.target.value as DelivererStatus })}
-                      className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm appearance-none"
-                    >
-                      <option value="Disponível">Disponível</option>
-                      <option value="Indisponível">Indisponível</option>
-                      <option value="Offline">Offline</option>
-                    </select>
-                  </div>
-
-                  <div className="pt-4 flex gap-3">
-                    <button
-                      onClick={handleSaveDeliverer}
-                      className="flex-1 bg-stone-900 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-green-600 transition-all shadow-lg hover:scale-[1.02] active:scale-95"
-                    >
-                      {editingDeliverer ? 'Atualizar' : 'Cadastrar'}
-                    </button>
-                    {editingDeliverer && (
-                      <button
-                        onClick={() => {
-                          setEditingDeliverer(null);
-                          setDelivererForm({
-                            name: '', phone: '', cpf: '', vehicleType: 'Moto', vehicleModel: '',
-                            vehiclePlate: '', vehicleColor: '', status: 'Disponível', maxOrders: 3, photoUrl: '', isActive: true
-                          });
-                        }}
-                        className="px-4 bg-stone-200 text-stone-500 rounded-2xl hover:bg-red-100 hover:text-red-500 transition-all"
-                      >
-                        <i className="fas fa-times"></i>
-                      </button>
-                    )}
-                  </div>
-                </div>
+        {/* ABA DE ENTREGADORES */}
+        {activeTab === 'entregadores' && (
+          <div className="space-y-8 animate-fade-in">
+            <div className="flex flex-col md:flex-row justify-between items-center border-b border-stone-100 pb-8 gap-4">
+              <h3 className="text-2xl font-black uppercase text-stone-800 tracking-tight flex items-center gap-3">
+                <i className="fas fa-motorcycle text-orange-500"></i>
+                Gestão de Entregadores
+              </h3>
+              <div className="bg-stone-900 text-white px-5 py-2 rounded-full text-xs font-black uppercase tracking-widest">
+                {deliverers.filter(d => d.isActive).length} Ativos
               </div>
             </div>
 
-            {/* LISTA DE ENTREGADORES */}
-            <div className="lg:col-span-2 space-y-4">
-              {deliverers.filter(d => d.isActive).length === 0 ? (
-                <div className="text-center py-20 bg-stone-50 rounded-[3rem] border-2 border-dashed border-stone-200">
-                  <i className="fas fa-motorcycle text-4xl text-stone-200 mb-4"></i>
-                  <p className="text-stone-300 font-black uppercase tracking-widest">Nenhum entregador cadastrado</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {deliverers.filter(d => d.isActive).map(deliverer => (
-                    <div key={deliverer.id} className="bg-white p-6 rounded-[2.5rem] border border-stone-100 shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
-                      <div className={`absolute top-0 right-0 w-20 h-20 bg-gradient-to-bl from-stone-100 to-transparent rounded-bl-[4rem] -mr-4 -mt-4 transition-all group-hover:scale-150 group-hover:from-orange-50`}></div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* FORMULÁRIO DE CADASTRO */}
+              <div className="lg:col-span-1 space-y-6">
+                <div className="bg-stone-50 p-8 rounded-[2.5rem] border border-stone-100 sticky top-8">
+                  <h4 className="text-lg font-black uppercase text-stone-900 mb-6 flex items-center gap-2">
+                    {editingDeliverer ? <i className="fas fa-edit text-blue-500"></i> : <i className="fas fa-plus-circle text-green-500"></i>}
+                    {editingDeliverer ? 'Editar Entregador' : 'Novo Entregador'}
+                  </h4>
 
-                      <div className="relative z-10">
-                        <div className="flex justify-between items-start mb-4">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl shadow-inner ${deliverer.vehicleType === 'Moto' ? 'bg-blue-50 text-blue-500' :
-                              deliverer.vehicleType === 'Carro' ? 'bg-purple-50 text-purple-500' :
-                                deliverer.vehicleType === 'Bicicleta' ? 'bg-green-50 text-green-500' :
-                                  'bg-orange-50 text-orange-500'
-                              }`}>
-                              <i className={`fas ${deliverer.vehicleType === 'Moto' ? 'fa-motorcycle' :
-                                deliverer.vehicleType === 'Carro' ? 'fa-car' :
-                                  deliverer.vehicleType === 'Bicicleta' ? 'fa-bicycle' :
-                                    'fa-person-walking'
-                                }`}></i>
-                            </div>
-                            <div>
-                              <h4 className="font-black text-stone-800 leading-none">{deliverer.name}</h4>
-                              <p className="text-[10px] font-bold text-stone-400 mt-1 uppercase tracking-wider">{deliverer.vehicleModel} • {deliverer.vehiclePlate}</p>
-                            </div>
-                          </div>
-                          <div className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border ${deliverer.status === 'Disponível' ? 'bg-green-100 text-green-600 border-green-200' :
-                            deliverer.status === 'Em Rota' ? 'bg-blue-100 text-blue-600 border-blue-200' :
-                              deliverer.status === 'Indisponível' ? 'bg-red-100 text-red-600 border-red-200' :
-                                'bg-stone-100 text-stone-400 border-stone-200'
-                            }`}>
-                            {deliverer.status}
-                          </div>
-                        </div>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Nome Completo</label>
+                      <input
+                        type="text"
+                        value={delivererForm.name}
+                        onChange={e => setDelivererForm({ ...delivererForm, name: e.target.value })}
+                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                        placeholder="Ex: João da Silva"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Telefone / WhatsApp</label>
+                      <input
+                        type="text"
+                        value={delivererForm.phone}
+                        onChange={e => setDelivererForm({ ...delivererForm, phone: e.target.value })}
+                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                        placeholder="(XX) XXXXX-XXXX"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">CPF</label>
+                      <input
+                        type="text"
+                        value={delivererForm.cpf}
+                        onChange={e => setDelivererForm({ ...delivererForm, cpf: e.target.value })}
+                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                        placeholder="000.000.000-00"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Senha de Acesso</label>
+                      <input
+                        type="text"
+                        value={delivererForm.password || ''}
+                        onChange={e => setDelivererForm({ ...delivererForm, password: e.target.value })}
+                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                        placeholder="Defina uma senha"
+                      />
+                    </div>
 
-                        <div className="grid grid-cols-2 gap-2 mb-4">
-                          <div className="bg-stone-50 p-3 rounded-2xl text-center">
-                            <p className="text-[9px] font-black text-stone-400 uppercase tracking-wider">Entregas</p>
-                            <p className="text-lg font-black text-stone-900">{deliverer.totalDeliveries}</p>
-                          </div>
-                          <div className="bg-stone-50 p-3 rounded-2xl text-center">
-                            <p className="text-[9px] font-black text-stone-400 uppercase tracking-wider">Avaliação</p>
-                            <p className="text-lg font-black text-orange-500 flex items-center justify-center gap-1">
-                              {deliverer.rating || '5.0'} <i className="fas fa-star text-[10px]"></i>
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              setEditingDeliverer(deliverer);
-                              setDelivererForm({
-                                name: deliverer.name,
-                                phone: deliverer.phone,
-                                cpf: deliverer.cpf,
-                                vehicleType: deliverer.vehicleType,
-                                vehicleModel: deliverer.vehicleModel,
-                                vehiclePlate: deliverer.vehiclePlate,
-                                vehicleColor: deliverer.vehicleColor,
-                                status: deliverer.status,
-                                maxOrders: deliverer.maxOrders,
-                                photoUrl: deliverer.photoUrl,
-                                isActive: deliverer.isActive
-                              });
-                            }}
-                            className="flex-1 bg-stone-900 text-white py-3 rounded-xl font-bold uppercase text-[10px] tracking-widest hover:bg-stone-800 transition-all"
-                          >
-                            Editar
-                          </button>
-                          <button
-                            onClick={() => handleDeleteDeliverer(deliverer.id)}
-                            className="px-4 bg-stone-100 text-stone-400 rounded-xl hover:bg-red-100 hover:text-red-500 transition-all"
-                          >
-                            <i className="fas fa-trash-alt"></i>
-                          </button>
-                        </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Veículo</label>
+                        <select
+                          value={delivererForm.vehicleType}
+                          onChange={e => setDelivererForm({ ...delivererForm, vehicleType: e.target.value as VehicleType })}
+                          className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm appearance-none"
+                        >
+                          <option value="Moto">Moto</option>
+                          <option value="Carro">Carro</option>
+                          <option value="Bicicleta">Bike</option>
+                          <option value="A pé">A pé</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Placa</label>
+                        <input
+                          type="text"
+                          value={delivererForm.vehiclePlate}
+                          onChange={e => setDelivererForm({ ...delivererForm, vehiclePlate: e.target.value })}
+                          className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                          placeholder="ABC-1234"
+                        />
                       </div>
                     </div>
-                  ))}
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Modelo</label>
+                        <input
+                          type="text"
+                          value={delivererForm.vehicleModel}
+                          onChange={e => setDelivererForm({ ...delivererForm, vehicleModel: e.target.value })}
+                          className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                          placeholder="Ex: Honda CG"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Cor</label>
+                        <input
+                          type="text"
+                          value={delivererForm.vehicleColor}
+                          onChange={e => setDelivererForm({ ...delivererForm, vehicleColor: e.target.value })}
+                          className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm"
+                          placeholder="Ex: Vermelha"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-stone-400 ml-4 mb-1 block">Status Inicial</label>
+                      <select
+                        value={delivererForm.status}
+                        onChange={e => setDelivererForm({ ...delivererForm, status: e.target.value as DelivererStatus })}
+                        className="w-full p-4 rounded-2xl border-2 border-white bg-white outline-none font-bold focus:border-orange-500 transition-all shadow-sm appearance-none"
+                      >
+                        <option value="Disponível">Disponível</option>
+                        <option value="Indisponível">Indisponível</option>
+                        <option value="Offline">Offline</option>
+                      </select>
+                    </div>
+
+                    <div className="pt-4 flex gap-3">
+                      <button
+                        onClick={handleSaveDeliverer}
+                        className="flex-1 bg-stone-900 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-green-600 transition-all shadow-lg hover:scale-[1.02] active:scale-95"
+                      >
+                        {editingDeliverer ? 'Atualizar' : 'Cadastrar'}
+                      </button>
+                      {editingDeliverer && (
+                        <button
+                          onClick={() => {
+                            setEditingDeliverer(null);
+                            setDelivererForm({
+                              name: '', phone: '', cpf: '', vehicleType: 'Moto', vehicleModel: '',
+                              vehiclePlate: '', vehicleColor: '', status: 'Disponível', maxOrders: 3, photoUrl: '', isActive: true
+                            });
+                          }}
+                          className="px-4 bg-stone-200 text-stone-500 rounded-2xl hover:bg-red-100 hover:text-red-500 transition-all"
+                        >
+                          <i className="fas fa-times"></i>
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              )}
+              </div>
+
+              {/* LISTA DE ENTREGADORES */}
+              <div className="lg:col-span-2 space-y-4">
+                {deliverers.filter(d => d.isActive).length === 0 ? (
+                  <div className="text-center py-20 bg-stone-50 rounded-[3rem] border-2 border-dashed border-stone-200">
+                    <i className="fas fa-motorcycle text-4xl text-stone-200 mb-4"></i>
+                    <p className="text-stone-300 font-black uppercase tracking-widest">Nenhum entregador cadastrado</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {deliverers.filter(d => d.isActive).map(deliverer => (
+                      <div key={deliverer.id} className="bg-white p-6 rounded-[2.5rem] border border-stone-100 shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
+                        <div className={`absolute top-0 right-0 w-20 h-20 bg-gradient-to-bl from-stone-100 to-transparent rounded-bl-[4rem] -mr-4 -mt-4 transition-all group-hover:scale-150 group-hover:from-orange-50`}></div>
+
+                        <div className="relative z-10">
+                          <div className="flex justify-between items-start mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl shadow-inner ${deliverer.vehicleType === 'Moto' ? 'bg-blue-50 text-blue-500' :
+                                deliverer.vehicleType === 'Carro' ? 'bg-purple-50 text-purple-500' :
+                                  deliverer.vehicleType === 'Bicicleta' ? 'bg-green-50 text-green-500' :
+                                    'bg-orange-50 text-orange-500'
+                                }`}>
+                                <i className={`fas ${deliverer.vehicleType === 'Moto' ? 'fa-motorcycle' :
+                                  deliverer.vehicleType === 'Carro' ? 'fa-car' :
+                                    deliverer.vehicleType === 'Bicicleta' ? 'fa-bicycle' :
+                                      'fa-person-walking'
+                                  }`}></i>
+                              </div>
+                              <div>
+                                <h4 className="font-black text-stone-800 leading-none">{deliverer.name}</h4>
+                                <p className="text-[10px] font-bold text-stone-400 mt-1 uppercase tracking-wider">{deliverer.vehicleModel} • {deliverer.vehiclePlate}</p>
+                              </div>
+                            </div>
+                            <div className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border ${deliverer.status === 'Disponível' ? 'bg-green-100 text-green-600 border-green-200' :
+                              deliverer.status === 'Em Rota' ? 'bg-blue-100 text-blue-600 border-blue-200' :
+                                deliverer.status === 'Indisponível' ? 'bg-red-100 text-red-600 border-red-200' :
+                                  'bg-stone-100 text-stone-400 border-stone-200'
+                              }`}>
+                              {deliverer.status}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 mb-4">
+                            <div className="bg-stone-50 p-3 rounded-2xl text-center">
+                              <p className="text-[9px] font-black text-stone-400 uppercase tracking-wider">Entregas</p>
+                              <p className="text-lg font-black text-stone-900">{deliverer.totalDeliveries}</p>
+                            </div>
+                            <div className="bg-stone-50 p-3 rounded-2xl text-center">
+                              <p className="text-[9px] font-black text-stone-400 uppercase tracking-wider">Avaliação</p>
+                              <p className="text-lg font-black text-orange-500 flex items-center justify-center gap-1">
+                                {deliverer.rating || '5.0'} <i className="fas fa-star text-[10px]"></i>
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                setEditingDeliverer(deliverer);
+                                setDelivererForm({
+                                  name: deliverer.name,
+                                  phone: deliverer.phone,
+                                  cpf: deliverer.cpf,
+                                  vehicleType: deliverer.vehicleType,
+                                  vehicleModel: deliverer.vehicleModel,
+                                  vehiclePlate: deliverer.vehiclePlate,
+                                  vehicleColor: deliverer.vehicleColor,
+                                  status: deliverer.status,
+                                  maxOrders: deliverer.maxOrders,
+                                  photoUrl: deliverer.photoUrl,
+                                  isActive: deliverer.isActive
+                                });
+                              }}
+                              className="flex-1 bg-stone-900 text-white py-3 rounded-xl font-bold uppercase text-[10px] tracking-widest hover:bg-stone-800 transition-all"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              onClick={() => handleDeleteDeliverer(deliverer.id)}
+                              className="px-4 bg-stone-100 text-stone-400 rounded-xl hover:bg-red-100 hover:text-red-500 transition-all"
+                            >
+                              <i className="fas fa-trash-alt"></i>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* MODAL DE UPLOAD DE LOGO */}
 
