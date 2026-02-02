@@ -1,9 +1,19 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Marmita, DayOfWeek, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement, Deliverer, VehicleType, DelivererStatus } from '../types';
+import { Marmita, DayOfWeek, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement, Deliverer, VehicleType, DelivererStatus, GrupoOpcional, Opcional } from '../types';
 import { DAYS_LIST } from '../constants';
 import { db } from '../services/database';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+
+const modalStyles = `
+  @keyframes modalIn {
+    from { opacity: 0; transform: scale(0.95) translateY(20px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  .animate-modal-in {
+    animation: modalIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+`;
 
 type AdminTab = 'pedidos' | 'caixa' | 'menu' | 'bairros' | 'clientes' | 'entregadores' | 'config';
 
@@ -69,13 +79,35 @@ const Admin: React.FC = () => {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [orderToAssign, setOrderToAssign] = useState<Order | null>(null);
 
+  // Estados de Opcionais
+  const [gruposOpcionais, setGruposOpcionais] = useState<GrupoOpcional[]>([]);
+  const [showOpcionalModal, setShowOpcionalModal] = useState(false);
+  const [editingGrupo, setEditingGrupo] = useState<GrupoOpcional | null>(null);
+  const [grupoForm, setGrupoForm] = useState<Omit<GrupoOpcional, 'id' | 'opcionais'>>({
+    nome: '', minSelecao: 0, maxSelecao: 1
+  });
+  const [opcionalForm, setOpcionalForm] = useState<Omit<Opcional, 'id'>>({
+    nome: '', precoAdicional: 0, disponivel: true
+  });
+  const [isAddingOpcional, setIsAddingOpcional] = useState<string | false>(false);
+
   useEffect(() => {
     const init = async () => {
       try {
-        const cfg = await db.getConfig();
-        setConfig(cfg);
+        const [mMenu, mBairros, mConfigs, mDeliverers, mGrupos] = await Promise.all([
+          db.getMenu(),
+          db.getBairros(),
+          db.getConfig(),
+          db.getDeliverers(),
+          db.getGruposOpcionais()
+        ]);
+        setMenu(mMenu);
+        setBairros(mBairros);
+        setConfig(mConfigs);
+        setDeliverers(mDeliverers);
+        setGruposOpcionais(mGrupos);
         setDbStatus('Online');
-        if (!cfg.adminPassword) setIsAuthorized(true);
+        if (!mConfigs.adminPassword) setIsAuthorized(true);
       } catch (e) {
         console.error("Falha de comunicação com DB");
         setDbStatus('Offline');
@@ -149,24 +181,39 @@ const Admin: React.FC = () => {
 
   const refreshData = async () => {
     try {
-      const [m, b, o, c, d] = await Promise.all([
-        db.getMenu(), db.getBairros(), db.getOrders(), db.getAllCustomers(), db.getDeliverers()
-      ]);
-      setMenu(Array.isArray(m) ? m : []);
-      setBairros(Array.isArray(b) ? b : []);
-      setOrders(Array.isArray(o) ? o : []);
-      setCustomers(Array.isArray(c) ? c : []);
-      setDeliverers(Array.isArray(d) ? d : []);
+      // Usando try/catch individual para não travar o refresh se uma tabela falhar
+      const fetchSafe = async (fn: () => Promise<any>, setter: (val: any) => void) => {
+        try {
+          const data = await fn();
+          setter(Array.isArray(data) ? data : data || []);
+        } catch (e) { console.error(`Erro ao carregar dados: ${fn.name}`, e); }
+      };
 
-      const movementsData = await db.getCashMovements(globalDate);
-      setMovements(movementsData);
+      await Promise.all([
+        fetchSafe(db.getMenu, setMenu),
+        fetchSafe(db.getBairros, setBairros),
+        fetchSafe(db.getOrders, setOrders),
+        fetchSafe(db.getAllCustomers, setCustomers),
+        fetchSafe(db.getDeliverers, setDeliverers),
+        fetchSafe(db.getGruposOpcionais, setGruposOpcionais),
+        db.getConfig().then(setConfig).catch(() => { }),
+        db.getCashMovements(globalDate).then(setMovements).catch(() => { })
+      ]);
 
       setDbStatus('Online');
     } catch (e) {
-      console.error("Erro na sincronização de dados");
+      console.error("Erro geral na sincronização", e);
       setDbStatus('Offline');
     }
   };
+
+  // Polling para atualização "tempo real"
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshData();
+    }, 20000); // Atualiza a cada 20 segundos
+    return () => clearInterval(interval);
+  }, [globalDate]);
 
   const ordersData = useMemo(() => {
     const daily = orders.filter(o => o.createdAt && o.createdAt.startsWith(globalDate));
@@ -466,6 +513,54 @@ const Admin: React.FC = () => {
     } catch (e) { alert("Erro ao salvar entregador"); }
   };
 
+  const handleSaveGrupo = async () => {
+    if (!grupoForm.nome) return alert('Nome do grupo é obrigatório');
+    try {
+      if (editingGrupo) {
+        await db.updateGrupoOpcional(editingGrupo.id, grupoForm);
+      } else {
+        await db.saveGrupoOpcional(grupoForm);
+      }
+      setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
+      setEditingGrupo(null);
+      await refreshData();
+    } catch (e: any) { alert("Erro ao salvar grupo: " + (e.message || "Erro desconhecido")); }
+  };
+
+  const handleDeleteGrupo = async (id: string) => {
+    if (!confirm("Deseja excluir este grupo e todos os seus opcionais?")) return;
+    try {
+      await db.deleteGrupoOpcional(id);
+      refreshData();
+    } catch (e: any) { alert("Erro ao excluir grupo: " + (e.message || "Erro desconhecido")); }
+  };
+
+  const handleSaveOpcional = async (grupoId: string) => {
+    if (!opcionalForm.nome) return alert('Nome do opcional é obrigatório');
+    try {
+      await db.saveOpcional(grupoId, opcionalForm);
+      setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true });
+      setIsAddingOpcional(false);
+      await refreshData();
+    } catch (e: any) { alert("Erro ao salvar opcional: " + (e.message || "Erro desconhecido")); }
+  };
+
+  const handleDeleteOpcional = async (id: string) => {
+    if (!confirm("Excluir opcional?")) return;
+    try {
+      await db.deleteOpcional(id);
+      await refreshData(); // Garantir que o refresh terminou
+    } catch (e: any) { alert("Erro ao excluir opcional: " + (e.message || "Erro desconhecido")); }
+  };
+
+  const handleToggleVinculo = async (marmitaId: string, grupoId: string, isViculado: boolean) => {
+    try {
+      if (isViculado) await db.desvincularGrupoMarmita(marmitaId, grupoId);
+      else await db.vincularGrupoMarmita(marmitaId, grupoId);
+      await refreshData();
+    } catch (e: any) { alert("Erro ao atualizar vínculo: " + (e.message || "Erro desconhecido")); }
+  };
+
   const handleDeleteDeliverer = async (id: string) => {
     if (!confirm("Desativar este entregador?")) return;
     try {
@@ -497,7 +592,23 @@ const Admin: React.FC = () => {
 
   const getOrderHtml = (order: Order) => {
     const itemsHtml = Array.isArray(order.items)
-      ? order.items.map(i => `<div class="item-row"><span>${i.quantity}x ${i.marmita?.name || 'Item'}</span><span>R$${((i.quantity || 1) * (i.marmita?.price || 0)).toFixed(2)}</span></div>`).join('')
+      ? order.items.map(i => {
+        const optionalsPrice = (i.selectedOptionals || []).reduce((sum, opt) => sum + opt.precoAdicional, 0);
+        const itemTotal = ((i.quantity || 1) * ((i.marmita?.price || 0) + optionalsPrice));
+        const optionalsText = i.selectedOptionals && i.selectedOptionals.length > 0
+          ? `<div style="font-size: 11px; margin-left: 10px; font-style: italic;">+ ${i.selectedOptionals.map(o => o.nome).join(', ')}</div>`
+          : '';
+
+        return `
+          <div style="margin-bottom: 8px;">
+            <div class="item-row">
+              <span>${i.quantity}x ${i.marmita?.name || 'Item'}</span>
+              <span>R$${itemTotal.toFixed(2)}</span>
+            </div>
+            ${optionalsText}
+          </div>
+        `;
+      }).join('')
       : '<div>Nenhum item detalhado</div>';
 
     const dateStr = new Date(order.createdAt).toLocaleString('pt-BR');
@@ -1175,6 +1286,47 @@ const Admin: React.FC = () => {
                   <i className={`fas ${editingMarmita ? 'fa-save' : 'fa-plus-circle'} text-xl`}></i>
                   {editingMarmita ? 'Salvar Alterações' : 'Adicionar ao Cardápio'}
                 </button>
+
+                <div className="pt-6 border-t-2 border-white">
+                  <div className="flex justify-between items-center mb-4 px-4">
+                    <label className="text-[10px] font-black uppercase text-stone-400">Grupos de Opcionais</label>
+                    <button
+                      onClick={() => setShowOpcionalModal(true)}
+                      className="text-[10px] font-black uppercase text-orange-600 hover:text-orange-700 underline"
+                    >
+                      Gerenciar Grupos
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-[200px] overflow-y-auto px-2">
+                    {gruposOpcionais.length === 0 ? (
+                      <p className="text-[9px] text-stone-300 uppercase font-black text-center py-4">Nenhum grupo cadastrado</p>
+                    ) : (
+                      gruposOpcionais.map(g => {
+                        const currentMarmitaInMenu = menu.find(m => m.id === editingMarmita?.id);
+                        const isVinculado = currentMarmitaInMenu?.gruposOpcionais?.some(v => v.id === g.id);
+                        return (
+                          <div key={g.id} className="flex items-center justify-between p-3 bg-white rounded-2xl border border-stone-100 shadow-sm">
+                            <span className="text-[10px] font-bold text-stone-600 uppercase">{g.nome}</span>
+                            <button
+                              onClick={() => editingMarmita && handleToggleVinculo(editingMarmita.id, g.id, !!isVinculado)}
+                              disabled={!editingMarmita}
+                              className={`text-[9px] font-black uppercase px-3 py-1 rounded-full transition-all ${!editingMarmita ? 'opacity-20 bg-stone-100 cursor-not-allowed' :
+                                isVinculado ? 'bg-orange-100 text-orange-600' : 'bg-stone-100 text-stone-400'
+                                }`}
+                            >
+                              {isVinculado ? 'Vínculado' : 'Vincular'}
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  {!editingMarmita && (
+                    <p className="text-[8px] text-stone-400 font-bold uppercase mt-2 px-4 italic">
+                      * Salve o prato antes de vincular grupos
+                    </p>
+                  )}
+                </div>
                 {editingMarmita && (
                   <button onClick={() => {
                     setEditingMarmita(null);
@@ -1869,6 +2021,181 @@ const Admin: React.FC = () => {
             </div>
 
             <button onClick={() => setShowAssignModal(false)} className="w-full mt-8 bg-stone-100 text-stone-400 py-5 rounded-2xl font-black uppercase text-[10px] tracking-widest">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Gerenciamento de Opcionais */}
+      {showOpcionalModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-stone-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl shadow-stone-900/20 flex flex-col max-h-[90vh] animate-modal-in overflow-hidden relative">
+            <div className="p-8 border-b border-stone-100 flex justify-between items-center bg-stone-50/50">
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900">Gerenciar Opcionais</h3>
+              <button
+                onClick={() => {
+                  setShowOpcionalModal(false);
+                  setEditingGrupo(null);
+                  setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
+                }}
+                className="w-12 h-12 bg-white rounded-2xl shadow-md flex items-center justify-center hover:bg-red-50 hover:text-red-500 transition-all text-stone-400"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-8 space-y-8">
+              <style>{modalStyles}</style>
+              {/* Formulário de Grupo */}
+              <div className="bg-orange-50/50 p-6 rounded-[2rem] border border-orange-100 space-y-4">
+                <h4 className="text-xs font-black uppercase text-orange-600 px-2">
+                  {editingGrupo ? 'Editar Grupo' : 'Novo Grupo de Escolha'}
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Nome (Ex: Escolha o Feijão)</label>
+                    <input
+                      type="text"
+                      value={grupoForm.nome}
+                      onChange={e => setGrupoForm({ ...grupoForm, nome: e.target.value })}
+                      className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Min.</label>
+                      <input
+                        type="number"
+                        value={grupoForm.minSelecao}
+                        onChange={e => setGrupoForm({ ...grupoForm, minSelecao: parseInt(e.target.value) })}
+                        className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Max.</label>
+                      <input
+                        type="number"
+                        value={grupoForm.maxSelecao}
+                        onChange={e => setGrupoForm({ ...grupoForm, maxSelecao: parseInt(e.target.value) })}
+                        className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSaveGrupo}
+                    className="flex-1 bg-stone-900 text-white font-black uppercase text-[10px] py-4 rounded-2xl hover:bg-orange-600 transition-all shadow-lg active:scale-95"
+                  >
+                    {editingGrupo ? 'Atualizar Grupo' : 'Cadastrar Grupo'}
+                  </button>
+                  {editingGrupo && (
+                    <button
+                      onClick={() => {
+                        setEditingGrupo(null);
+                        setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
+                      }}
+                      className="p-4 bg-white text-stone-400 rounded-2xl hover:text-red-500 shadow-sm transition-all"
+                    >
+                      <i className="fas fa-undo"></i>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Lista de Grupos */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-black uppercase text-stone-400 px-2 tracking-widest">Grupos Existentes</h4>
+                <div className="space-y-4">
+                  {gruposOpcionais.map(g => (
+                    <div key={g.id} className="bg-stone-50 rounded-[2.5rem] border border-stone-100 p-6 space-y-4 overflow-hidden">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="text-sm font-black uppercase text-stone-900">{g.nome}</p>
+                          <p className="text-[9px] font-bold text-stone-400 uppercase">Min: {g.minSelecao} | Max: {g.maxSelecao}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setEditingGrupo(g);
+                              setGrupoForm({ nome: g.nome, minSelecao: g.minSelecao, maxSelecao: g.maxSelecao });
+                            }}
+                            className="w-8 h-8 rounded-full bg-white text-stone-400 hover:text-orange-500 shadow-sm flex items-center justify-center transition-all"
+                          >
+                            <i className="fas fa-edit text-[10px]"></i>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteGrupo(g.id)}
+                            className="w-8 h-8 rounded-full bg-white text-stone-400 hover:text-red-500 shadow-sm flex items-center justify-center transition-all"
+                          >
+                            <i className="fas fa-trash text-[10px]"></i>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Opcionais do Grupo */}
+                      <div className="pl-4 border-l-2 border-stone-200 space-y-2">
+                        {g.opcionais.map(opt => (
+                          <div key={opt.id} className="flex justify-between items-center bg-white/50 p-2 rounded-xl">
+                            <span className="text-[10px] font-medium text-stone-600">{opt.nome} (+ R$ {opt.precoAdicional.toFixed(2)})</span>
+                            <button onClick={() => handleDeleteOpcional(opt.id)} className="text-stone-300 hover:text-red-500">
+                              <i className="fas fa-times-circle text-[10px]"></i>
+                            </button>
+                          </div>
+                        ))}
+
+                        {isAddingOpcional === g.id ? (
+                          <div className="pt-2 flex flex-col gap-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <input
+                                type="text"
+                                placeholder="Nome (Ex: Feijão Preto)"
+                                value={opcionalForm.nome}
+                                onChange={e => setOpcionalForm({ ...opcionalForm, nome: e.target.value })}
+                                className="p-4 bg-white rounded-xl border-none outline-none text-[10px] font-bold shadow-sm"
+                              />
+                              <input
+                                type="number"
+                                placeholder="Preço (0.00)"
+                                value={opcionalForm.precoAdicional}
+                                onChange={e => setOpcionalForm({ ...opcionalForm, precoAdicional: parseFloat(e.target.value) })}
+                                className="p-4 bg-white rounded-xl border-none outline-none text-[10px] font-bold shadow-sm"
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSaveOpcional(g.id)}
+                                className="flex-1 bg-green-500 text-white font-black uppercase text-[9px] py-2 rounded-xl"
+                              >
+                                Adicionar
+                              </button>
+                              <button
+                                onClick={() => setIsAddingOpcional(false)}
+                                className="px-4 bg-stone-200 text-stone-500 font-black uppercase text-[9px] py-2 rounded-xl"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setIsAddingOpcional(g.id);
+                              setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true });
+                            }}
+                            className="text-[9px] font-black uppercase text-stone-400 hover:text-stone-600 flex items-center gap-2 pt-1"
+                          >
+                            <i className="fas fa-plus-circle"></i> Novo Item Opcional
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {gruposOpcionais.length === 0 && (
+                    <p className="text-center py-20 text-[10px] font-bold text-stone-300 uppercase">Nenhum grupo cadastrado</p>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

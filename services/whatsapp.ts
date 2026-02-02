@@ -6,10 +6,15 @@ import { Order, AppConfig } from '../types';
  */
 export const generateWhatsAppLink = (order: Order, config: AppConfig): string => {
   const itemsText = order.items
-    .map(item => `• *${item.quantity}x ${item.marmita.name}* - R$ ${(item.marmita.price * item.quantity).toFixed(2)}`)
+    .map(item => {
+      const optionalsText = item.selectedOptionals && item.selectedOptionals.length > 0
+        ? `%0A    _Opcionais: ${item.selectedOptionals.map(o => o.nome).join(', ')}_`
+        : '';
+      return `• *${item.quantity}x ${item.marmita.name}* - R$ ${(item.marmita.price * item.quantity).toFixed(2)}${optionalsText}`;
+    })
     .join('%0A');
 
-  const deliveryInfo = order.deliveryMethod === 'Retirada' 
+  const deliveryInfo = order.deliveryMethod === 'Retirada'
     ? `*Tipo:* RETIRADA NO LOCAL`
     : `*Tipo:* ENTREGA%0A*Endereço:* ${order.customerAddress}%0A*Bairro:* ${order.neighborhood}`;
 

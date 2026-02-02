@@ -24,6 +24,21 @@ export interface Customer {
   neighborhood: string;
 }
 
+export interface Opcional {
+  id: string;
+  nome: string;
+  precoAdicional: number;
+  disponivel: boolean;
+}
+
+export interface GrupoOpcional {
+  id: string;
+  nome: string;
+  minSelecao: number;
+  maxSelecao: number;
+  opcionais: Opcional[];
+}
+
 export interface Marmita {
   id: string;
   name: string;
@@ -34,11 +49,13 @@ export interface Marmita {
   imageUrl?: string;
   prepTime?: string;
   available: boolean;
+  gruposOpcionais?: GrupoOpcional[];
 }
 
 export interface OrderItem {
   marmita: Marmita;
   quantity: number;
+  selectedOptionals?: Opcional[];
 }
 
 export type OrderStatus = 'Pendente' | 'Impresso' | 'Preparo' | 'Entrega' | 'Finalizado' | 'Cancelado';

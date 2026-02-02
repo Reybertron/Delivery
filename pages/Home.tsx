@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Marmita, DayOfWeek, OrderItem, Order, Neighborhood, Customer, DeliveryMethod, OrderStatus, AppConfig } from '../types';
+import { Marmita, DayOfWeek, OrderItem, Order, Neighborhood, Customer, DeliveryMethod, OrderStatus, AppConfig, Opcional, GrupoOpcional } from '../types';
 import { DAYS_LIST } from '../constants';
 import { generateWhatsAppLink } from '../services/whatsapp';
 import { db } from '../services/database';
@@ -20,6 +20,12 @@ const Home: React.FC = () => {
 
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('Entrega');
+
+  const [optionalModal, setOptionalModal] = useState<{
+    show: boolean;
+    marmita: Marmita | null;
+    selections: { [groupId: string]: Opcional[] };
+  }>({ show: false, marmita: null, selections: {} });
 
   const [customerInfo, setCustomerInfo] = useState({
     phone: '',
@@ -80,6 +86,10 @@ const Home: React.FC = () => {
         try {
           const existingCustomer = await db.getCustomer(cleanPhone);
           if (existingCustomer) {
+            // LOGICA SENIOR: Verifica se o bairro do cliente existe no cadastro de taxas
+            const bairroSalvo = existingCustomer.neighborhood || '';
+            const bairroValido = bairros.find(b => b.name.toLowerCase().trim() === bairroSalvo.toLowerCase().trim());
+
             setCustomerInfo(prev => ({
               ...prev,
               name: existingCustomer.name,
@@ -87,7 +97,8 @@ const Home: React.FC = () => {
               street: existingCustomer.street || '',
               number: existingCustomer.number || '',
               complement: existingCustomer.complement || '',
-              neighborhood: existingCustomer.neighborhood || ''
+              // Se o bairro não estiver no cadastro de taxas, deixa vazio para escolha manual
+              neighborhood: bairroValido ? bairroValido.name : ''
             }));
           }
         } catch (e) {
@@ -97,7 +108,7 @@ const Home: React.FC = () => {
     };
     const timer = setTimeout(fetchCustomer, 800);
     return () => clearTimeout(timer);
-  }, [customerInfo.phone]);
+  }, [customerInfo.phone, bairros]);
 
   const handleCEPLookup = async (cep: string) => {
     const cleanCep = cep.replace(/\D/g, '');
@@ -128,19 +139,44 @@ const Home: React.FC = () => {
 
   const filteredMenu = useMemo(() => menu.filter(m => m.day === todayDay && m.available), [menu, todayDay]);
 
-  const addToCart = (marmita: Marmita) => {
+  const addToCart = (marmita: Marmita, selectedOptionals?: Opcional[]) => {
     if (!isBusinessOpen) return;
+
+    // Se a marmita tem opcionais e nenhum foi passado, abre o modal
+    if (marmita.gruposOpcionais && marmita.gruposOpcionais.length > 0 && !selectedOptionals) {
+      setOptionalModal({
+        show: true,
+        marmita,
+        selections: {}
+      });
+      return;
+    }
+
     setCart(prev => {
-      const existing = prev.find(item => item.marmita.id === marmita.id);
-      if (existing) return prev.map(item => item.marmita.id === marmita.id ? { ...item, quantity: item.quantity + 1 } : item);
-      return [...prev, { marmita, quantity: 1 }];
+      // Comparar se já existe no carrinho com os MESMOS opcionais
+      const existing = prev.find(item => {
+        const sameMarmita = item.marmita.id === marmita.id;
+        if (!sameMarmita) return false;
+
+        const optA = item.selectedOptionals || [];
+        const optB = selectedOptionals || [];
+        if (optA.length !== optB.length) return false;
+
+        return optA.every(oa => optB.some(ob => ob.id === oa.id));
+      });
+
+      if (existing) {
+        return prev.map(item => item === existing ? { ...item, quantity: item.quantity + 1 } : item);
+      }
+      return [...prev, { marmita, quantity: 1, selectedOptionals }];
     });
 
-    // Auto-direcionamento para o campo WhatsApp após um curto delay (para garantir renderização)
-    setTimeout(() => {
-      phoneInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      phoneInputRef.current?.focus();
-    }, 100);
+    if (!selectedOptionals) {
+      setTimeout(() => {
+        phoneInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        phoneInputRef.current?.focus();
+      }, 100);
+    }
   };
 
   const updateCartQuantity = (id: string, delta: number) => {
@@ -153,7 +189,12 @@ const Home: React.FC = () => {
     }).filter(item => item.quantity > 0));
   };
 
-  const subtotal = useMemo(() => cart.reduce((acc, item) => acc + (item.marmita.price * item.quantity), 0), [cart]);
+  const subtotal = useMemo(() => {
+    return cart.reduce((acc, item) => {
+      const optionalsPrice = (item.selectedOptionals || []).reduce((sum, opt) => sum + opt.precoAdicional, 0);
+      return acc + ((item.marmita.price + optionalsPrice) * item.quantity);
+    }, 0);
+  }, [cart]);
   const total = subtotal + selectedNeighborhoodFee;
 
   const handleCheckout = async () => {
@@ -400,19 +441,33 @@ const Home: React.FC = () => {
                   <i className="fas fa-cart-arrow-down text-3xl text-stone-100 mb-2"></i>
                   <p className="text-stone-400 text-sm font-bold uppercase">Carrinho Vazio</p>
                 </div>
-              ) : cart.map(item => (
-                <div key={item.marmita.id} className="flex justify-between items-center bg-stone-50 p-4 rounded-2xl border border-stone-100">
-                  <div className="flex-1">
-                    <p className="font-bold text-sm text-stone-800">{item.marmita.name}</p>
-                    <p className="text-[10px] text-orange-600 font-black">R$ {item.marmita.price.toFixed(2)} un.</p>
+              ) : cart.map((item, index) => {
+                const itemPrice = item.marmita.price + (item.selectedOptionals || []).reduce((sum, opt) => sum + opt.precoAdicional, 0);
+                return (
+                  <div key={index} className="bg-stone-50 p-4 rounded-2xl border border-stone-100">
+                    <div className="flex justify-between items-center mb-1">
+                      <div className="flex-1">
+                        <p className="font-bold text-sm text-stone-800">{item.marmita.name}</p>
+                        <p className="text-[10px] text-orange-600 font-black">R$ {itemPrice.toFixed(2)} un.</p>
+                      </div>
+                      <div className="flex items-center gap-4 bg-white px-3 py-1.5 rounded-xl border border-stone-200">
+                        <button onClick={() => updateCartQuantity(item.marmita.id, -1)} className="text-stone-400 hover:text-orange-600 transition-colors font-black text-lg">×</button>
+                        <span className="text-sm font-black w-4 text-center">{item.quantity}</span>
+                        <button onClick={() => updateCartQuantity(item.marmita.id, 1)} className="text-orange-600 font-black text-lg">+</button>
+                      </div>
+                    </div>
+                    {item.selectedOptionals && item.selectedOptionals.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {item.selectedOptionals.map(opt => (
+                          <span key={opt.id} className="text-[9px] bg-white border border-stone-200 text-stone-500 px-2 py-0.5 rounded-full font-bold">
+                            + {opt.nome}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-4 bg-white px-3 py-1.5 rounded-xl border border-stone-200">
-                    <button onClick={() => updateCartQuantity(item.marmita.id, -1)} className="text-stone-400 hover:text-orange-600 transition-colors font-black text-lg">×</button>
-                    <span className="text-sm font-black w-4 text-center">{item.quantity}</span>
-                    <button onClick={() => updateCartQuantity(item.marmita.id, 1)} className="text-orange-600 font-black text-lg">+</button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="space-y-4 mb-8">
@@ -635,6 +690,105 @@ const Home: React.FC = () => {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE OPCIONAIS */}
+      {optionalModal.show && optionalModal.marmita && (
+        <div className="fixed inset-0 z-[150] flex items-end md:items-center justify-center p-0 md:p-4 bg-stone-900/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white w-full max-w-xl rounded-t-[3rem] md:rounded-[3rem] shadow-2xl overflow-hidden relative max-h-[90vh] flex flex-col">
+            <div className="p-8 border-b border-stone-100 flex justify-between items-center bg-white sticky top-0 z-10">
+              <div>
+                <h3 className="text-2xl font-black text-stone-900 leading-none mb-1">{optionalModal.marmita.name}</h3>
+                <p className="text-orange-600 font-bold text-xs uppercase tracking-widest">Personalize seu pedido</p>
+              </div>
+              <button
+                onClick={() => setOptionalModal({ show: false, marmita: null, selections: {} })}
+                className="w-12 h-12 bg-stone-100 rounded-full flex items-center justify-center text-stone-400 hover:text-red-500 transition-all"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-8 space-y-10 no-scrollbar">
+              {optionalModal.marmita.gruposOpcionais?.map(grupo => (
+                <div key={grupo.id} className="space-y-4">
+                  <div className="flex justify-between items-end">
+                    <div>
+                      <h4 className="font-black text-stone-800 uppercase tracking-tighter text-lg">{grupo.nome}</h4>
+                      <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest">
+                        {grupo.minSelecao > 0 ? `Obrigatório • Selecione ${grupo.minSelecao}` : 'Opcional'}
+                        {grupo.maxSelecao > 1 ? ` • Máximo ${grupo.maxSelecao}` : (grupo.maxSelecao === 1 ? ' • Escolha 1' : '')}
+                      </p>
+                    </div>
+                    {grupo.minSelecao > 0 && !(optionalModal.selections[grupo.id]?.length >= grupo.minSelecao) && (
+                      <span className="bg-orange-100 text-orange-600 text-[8px] font-black px-2 py-1 rounded-md uppercase">Obrigatório</span>
+                    )}
+                  </div>
+
+                  <div className="space-y-3">
+                    {grupo.opcionais.map(opcional => {
+                      const isSelected = optionalModal.selections[grupo.id]?.some(s => s.id === opcional.id);
+                      return (
+                        <button
+                          key={opcional.id}
+                          disabled={!opcional.disponivel}
+                          onClick={() => {
+                            setOptionalModal(prev => {
+                              const current = prev.selections[grupo.id] || [];
+                              let next: Opcional[];
+
+                              if (isSelected) {
+                                next = current.filter(s => s.id !== opcional.id);
+                              } else {
+                                if (grupo.maxSelecao === 1) {
+                                  next = [opcional];
+                                } else if (grupo.maxSelecao > 0 && current.length < grupo.maxSelecao) {
+                                  next = [...current, opcional];
+                                } else if (grupo.maxSelecao > 0) {
+                                  alert(`Limite atingido! Você só pode escolher ${grupo.maxSelecao} item(ns) neste grupo.`);
+                                  return prev;
+                                } else {
+                                  // Caso maxSelecao seja 0 ou não definido (ilimitado)
+                                  next = [...current, opcional];
+                                }
+                              }
+                              return { ...prev, selections: { ...prev.selections, [grupo.id]: next } };
+                            });
+                          }}
+                          className={`w-full flex justify-between items-center p-5 rounded-2xl border-2 transition-all ${isSelected ? 'border-orange-500 bg-orange-50/50 shadow-md' : 'border-stone-100 bg-stone-50 hover:border-stone-200'
+                            } ${!opcional.disponivel ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
+                        >
+                          <div className="text-left">
+                            <p className={`font-bold transition-colors ${isSelected ? 'text-orange-700' : 'text-stone-700'}`}>{opcional.nome}</p>
+                            {opcional.precoAdicional > 0 && <p className="text-xs font-black text-orange-600">+ R$ {opcional.precoAdicional.toFixed(2)}</p>}
+                          </div>
+                          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-orange-500 border-orange-500 text-white animate-bounce-short' : 'bg-white border-stone-200'
+                            }`}>
+                            {isSelected && <i className="fas fa-check text-[10px]"></i>}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-8 bg-stone-50 border-t border-stone-100">
+              <button
+                disabled={optionalModal.marmita.gruposOpcionais?.some(g => (optionalModal.selections[g.id]?.length || 0) < g.minSelecao)}
+                onClick={() => {
+                  const allSelected = Object.values(optionalModal.selections).flat();
+                  addToCart(optionalModal.marmita!, allSelected);
+                  setOptionalModal({ show: false, marmita: null, selections: {} });
+                }}
+                className="w-full bg-stone-900 text-white py-6 rounded-3xl font-black uppercase tracking-widest hover:bg-orange-600 transition-all shadow-xl disabled:bg-stone-200 disabled:text-stone-400 disabled:cursor-not-allowed text-lg"
+              >
+                ADICIONAR AO PEDIDO
+              </button>
             </div>
           </div>
         </div>

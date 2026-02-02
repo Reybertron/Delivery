@@ -1,5 +1,5 @@
 
-import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement, Deliverer } from '../types';
+import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMovement, Deliverer, Opcional, GrupoOpcional } from '../types';
 import { supabase } from '../lib/supabase';
 
 export const db = {
@@ -15,7 +15,7 @@ export const db = {
       if (error.code === 'PGRST116') {
         return {
           businessName: 'Panelas da Vanda',
-          businessWhatsApp: '5511999999999',
+          businessWhatsApp: '73982298750',
           autoSaveCustomer: true,
           logoUrl: '',
           adminPassword: '',
@@ -88,10 +88,23 @@ export const db = {
   getMenu: async (): Promise<Marmita[]> => {
     const { data, error } = await supabase
       .from('marmitas')
-      .select('*')
+      .select(`
+        *,
+        marmitas_grupos(
+          grupos_opcionais(
+            *,
+            opcionais(*)
+          )
+        )
+      `)
       .order('id', { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+      console.error("Erro ao buscar menu:", error);
+      throw error;
+    }
+
+    console.log("Dados brutos do banco:", data);
 
     return data.map((r: any) => ({
       id: r.id.toString(),
@@ -102,7 +115,22 @@ export const db = {
       category: r.categoria,
       imageUrl: r.imagem_url,
       prepTime: r.tempo_preparo,
-      available: r.disponivel !== false // Default to true if null
+      available: r.disponivel !== false,
+      gruposOpcionais: r.marmitas_grupos?.map((mg: any) => {
+        if (!mg.grupos_opcionais) return null;
+        return {
+          id: mg.grupos_opcionais.id,
+          nome: mg.grupos_opcionais.nome,
+          minSelecao: mg.grupos_opcionais.min_selecao,
+          maxSelecao: mg.grupos_opcionais.max_selecao,
+          opcionais: mg.grupos_opcionais.opcionais?.map((opt: any) => ({
+            id: opt.id,
+            nome: opt.nome,
+            precoAdicional: parseFloat(opt.preco_adicional),
+            disponivel: opt.disponivel
+          })) || []
+        };
+      }).filter(Boolean)
     }));
   },
 
@@ -149,6 +177,101 @@ export const db = {
     const { error } = await supabase.from('marmitas').delete().eq('id', id);
     if (error) throw error;
     return { success: true };
+  },
+
+  // --- NOVAS FUNÇÕES PARA OPCIONAIS ---
+  getGruposOpcionais: async (): Promise<GrupoOpcional[]> => {
+    const { data, error } = await supabase
+      .from('grupos_opcionais')
+      .select('*, opcionais(*)');
+    if (error) throw error;
+    return data.map((g: any) => ({
+      id: g.id,
+      nome: g.nome,
+      minSelecao: g.min_selecao,
+      maxSelecao: g.max_selecao,
+      opcionais: (g.opcionais || []).map((o: any) => ({
+        id: o.id,
+        nome: o.nome,
+        precoAdicional: parseFloat(o.preco_adicional || 0),
+        disponivel: o.disponivel !== false
+      }))
+    }));
+  },
+
+  saveGrupoOpcional: async (grupo: Omit<GrupoOpcional, 'id' | 'opcionais'>) => {
+    const { data, error } = await supabase
+      .from('grupos_opcionais')
+      .insert([{
+        nome: grupo.nome,
+        min_selecao: grupo.minSelecao,
+        max_selecao: grupo.maxSelecao
+      }])
+      .select();
+    if (error) throw error;
+    return data[0];
+  },
+
+  updateGrupoOpcional: async (id: string, grupo: Omit<GrupoOpcional, 'id' | 'opcionais'>) => {
+    const { error } = await supabase
+      .from('grupos_opcionais')
+      .update({
+        nome: grupo.nome,
+        min_selecao: grupo.minSelecao,
+        max_selecao: grupo.maxSelecao
+      })
+      .eq('id', id);
+    if (error) throw error;
+  },
+
+  deleteGrupoOpcional: async (id: string) => {
+    const { error } = await supabase.from('grupos_opcionais').delete().eq('id', id);
+    if (error) throw error;
+  },
+
+  saveOpcional: async (grupoId: string, opcional: Omit<Opcional, 'id'>) => {
+    const { error } = await supabase
+      .from('opcionais')
+      .insert([{
+        grupo_id: grupoId,
+        nome: opcional.nome,
+        preco_adicional: opcional.precoAdicional,
+        disponivel: opcional.disponivel
+      }]);
+    if (error) throw error;
+  },
+
+  updateOpcional: async (id: string, opcional: Omit<Opcional, 'id'>) => {
+    const { error } = await supabase
+      .from('opcionais')
+      .update({
+        nome: opcional.nome,
+        preco_adicional: opcional.precoAdicional,
+        disponivel: opcional.disponivel
+      })
+      .eq('id', id);
+    if (error) throw error;
+  },
+
+  deleteOpcional: async (id: string) => {
+    const { error } = await supabase.from('opcionais').delete().eq('id', id);
+    if (error) throw error;
+  },
+
+  vincularGrupoMarmita: async (marmitaId: string, grupoId: string) => {
+    const { error } = await supabase
+      .from('marmitas_grupos')
+      .insert([{ marmita_id: marmitaId, grupo_id: grupoId }]);
+    if (error) throw error;
+  },
+
+  desvincularGrupoMarmita: async (marmitaId: string, grupoId: string) => {
+    const { error } = await supabase
+      .from('marmitas_grupos')
+      .delete()
+      .eq('marmita_id', marmitaId)
+      .eq('grupo_id', grupoId);
+    if (error) throw error;
   },
 
   // BAIRROS
