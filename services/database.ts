@@ -23,8 +23,9 @@ export const db = {
           closingTime: '14:00',
           autoPrint: false,
           printerName: '',
-          printMode: 'PDF + Impressão'
-        } as any;
+          printMode: 'PDF + Impressão',
+          hasAdminPassword: true
+        };
       }
       throw error;
     }
@@ -35,15 +36,29 @@ export const db = {
       businessName: data.nome_negocio,
       autoSaveCustomer: data.salvar_cliente_auto,
       logoUrl: data.url_logo,
-      adminPassword: data.senha_admin,
+      adminPassword: '', // Não retornamos mais a senha por segurança
       openingTime: data.horario_abertura,
       closingTime: data.horario_fechamento,
       autoPrint: data.auto_print,
       printerName: data.printer_name,
       printMode: data.print_mode || 'PDF + Impressão',
       mercadoPagoEnabled: data.mercadopago_ativo,
-      mercadoPagoPublicKey: data.mercadopago_token_publico
+      mercadoPagoPublicKey: data.mercadopago_token_publico,
+      hasAdminPassword: data.senha_admin !== null && data.senha_admin !== undefined && data.senha_admin !== '',
+      instagramUrl: data.url_instagram,
+      facebookUrl: data.url_facebook
     };
+  },
+
+  verifyAdminPassword: async (password: string): Promise<boolean> => {
+    const { data, error } = await supabase
+      .from('configuracoes')
+      .select('id')
+      .eq('senha_admin', password)
+      .single();
+
+    if (error || !data) return false;
+    return true;
   },
 
   saveConfig: async (config: AppConfig) => {
@@ -53,20 +68,25 @@ export const db = {
     // Primeiro verifica se já existe
     const { data: existing } = await supabase.from('configuracoes').select('id').single();
 
-    const payload = {
+    const payload: any = {
       whatsapp_negocio: config.businessWhatsApp,
       nome_negocio: config.businessName,
       salvar_cliente_auto: config.autoSaveCustomer,
       url_logo: config.logoUrl,
-      senha_admin: config.adminPassword,
       horario_abertura: config.openingTime || '08:00',
       horario_fechamento: config.closingTime || '14:00',
       auto_print: config.autoPrint,
       printer_name: config.printerName,
       print_mode: config.printMode || 'PDF + Impressão',
       mercadopago_ativo: config.mercadoPagoEnabled || false,
-      mercadopago_token_publico: config.mercadoPagoPublicKey || ''
+      mercadopago_token_publico: config.mercadoPagoPublicKey || '',
+      url_instagram: config.instagramUrl || '',
+      url_facebook: config.facebookUrl || ''
     };
+
+    if (config.adminPassword) {
+      payload.senha_admin = config.adminPassword;
+    }
 
     if (existing) {
       const { error } = await supabase
@@ -119,18 +139,19 @@ export const db = {
       gruposOpcionais: r.marmitas_grupos?.map((mg: any) => {
         if (!mg.grupos_opcionais) return null;
         return {
-          id: mg.grupos_opcionais.id,
+          id: mg.grupos_opcionais.id.toString(),
           nome: mg.grupos_opcionais.nome,
           minSelecao: mg.grupos_opcionais.min_selecao,
           maxSelecao: mg.grupos_opcionais.max_selecao,
           opcionais: mg.grupos_opcionais.opcionais?.map((opt: any) => ({
-            id: opt.id,
+            id: opt.id.toString(),
             nome: opt.nome,
             precoAdicional: parseFloat(opt.preco_adicional),
-            disponivel: opt.disponivel
+            disponivel: opt.disponivel,
+            imageUrl: opt.imagem_url
           })) || []
         };
-      }).filter(Boolean)
+      }).filter(Boolean) || []
     }));
   },
 
@@ -186,15 +207,18 @@ export const db = {
       .select('*, opcionais(*)');
     if (error) throw error;
     return data.map((g: any) => ({
-      id: g.id,
+      id: g.id.toString(),
       nome: g.nome,
       minSelecao: g.min_selecao,
       maxSelecao: g.max_selecao,
       opcionais: (g.opcionais || []).map((o: any) => ({
-        id: o.id,
+        id: o.id.toString(),
         nome: o.nome,
         precoAdicional: parseFloat(o.preco_adicional || 0),
-        disponivel: o.disponivel !== false
+        disponivel: o.disponivel !== false,
+        imageUrl: o.imagem_url,
+        gerenciarEstoque: o.gerenciar_estoque || false,
+        estoqueAtual: o.estoque_atual || 0
       }))
     }));
   },
@@ -236,7 +260,10 @@ export const db = {
         grupo_id: grupoId,
         nome: opcional.nome,
         preco_adicional: opcional.precoAdicional,
-        disponivel: opcional.disponivel
+        disponivel: opcional.disponivel,
+        imagem_url: opcional.imageUrl,
+        gerenciar_estoque: opcional.gerenciarEstoque || false,
+        estoque_atual: opcional.estoqueAtual || 0
       }]);
     if (error) throw error;
   },
@@ -247,7 +274,10 @@ export const db = {
       .update({
         nome: opcional.nome,
         preco_adicional: opcional.precoAdicional,
-        disponivel: opcional.disponivel
+        disponivel: opcional.disponivel,
+        imagem_url: opcional.imageUrl,
+        gerenciar_estoque: opcional.gerenciarEstoque || false,
+        estoque_atual: opcional.estoqueAtual || 0
       })
       .eq('id', id);
     if (error) throw error;
@@ -387,6 +417,33 @@ export const db = {
       }]);
 
     if (error) throw error;
+
+    // Baixa de estoque manual para opcionais
+    for (const item of order.items) {
+      if (item.selectedOptionals) {
+        for (const opt of item.selectedOptionals) {
+          if (opt.gerenciarEstoque) {
+            const { data: currentOpt } = await supabase
+              .from('opcionais')
+              .select('estoque_atual')
+              .eq('id', opt.id)
+              .single();
+
+            if (currentOpt) {
+              const novoEstoque = Math.max(0, (currentOpt.estoque_atual || 0) - item.quantity);
+              await supabase
+                .from('opcionais')
+                .update({
+                  estoque_atual: novoEstoque,
+                  disponivel: novoEstoque > 0
+                })
+                .eq('id', opt.id);
+            }
+          }
+        }
+      }
+    }
+
     return { success: true };
   },
 
@@ -455,6 +512,38 @@ export const db = {
   },
 
   updateOrderStatus: async (id: string, status: OrderStatus) => {
+    // Se for cancelado, repõe o estoque
+    if (status === 'Cancelado') {
+      const { data: order } = await supabase.from('pedidos').select('itens').eq('id', id).single();
+      if (order && order.itens) {
+        const itens = typeof order.itens === 'string' ? JSON.parse(order.itens) : order.itens;
+        for (const item of itens) {
+          if (item.selectedOptionals) {
+            for (const opt of item.selectedOptionals) {
+              if (opt.gerenciarEstoque) {
+                const { data: currentOpt } = await supabase
+                  .from('opcionais')
+                  .select('estoque_atual')
+                  .eq('id', opt.id)
+                  .single();
+
+                if (currentOpt) {
+                  const novoEstoque = (currentOpt.estoque_atual || 0) + item.quantity;
+                  await supabase
+                    .from('opcionais')
+                    .update({
+                      estoque_atual: novoEstoque,
+                      disponivel: true // Sempre reativa se houver estoque
+                    })
+                    .eq('id', opt.id);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     const { error } = await supabase
       .from('pedidos')
       .update({ status })
@@ -678,7 +767,29 @@ export const db = {
     return deliverer;
   },
 
-  // Backup temporariamente desabilitado ou reimplementar se necessário
+  // BACKUP E MARKETING
+  saveMarketingPoster: async (base64Image: string) => {
+    const { data, error } = await supabase
+      .from('marketing_posters')
+      .insert([{ image_data: base64Image }])
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  getLatestMarketingPoster: async (): Promise<string | null> => {
+    const { data, error } = await supabase
+      .from('marketing_posters')
+      .select('image_data')
+      .order('criado_em', { ascending: false })
+      .limit(1);
+
+    if (error || !data || data.length === 0) return null;
+    return data[0].image_data;
+  },
+
   exportBackup: async () => { console.warn("Backup via Supabase não implementado via API"); return { message: "Use o dashboard do Supabase" }; },
   importBackup: async () => { console.warn("Restore via Supabase não implementado via API"); return { success: false }; }
 };

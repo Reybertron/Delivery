@@ -1,10 +1,15 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Marmita, DayOfWeek, OrderItem, Order, Neighborhood, Customer, DeliveryMethod, OrderStatus, AppConfig, Opcional, GrupoOpcional } from '../types';
-import { DAYS_LIST } from '../constants';
+import { Marmita, DayOfWeek, OrderItem, Order, Neighborhood, DeliveryMethod, Opcional, AppConfig } from '../types';
 import { generateWhatsAppLink } from '../services/whatsapp';
 import { db } from '../services/database';
+
+// Componentes Refatorados
+import MenuSection from '../components/home/MenuSection';
+import CartSection from '../components/home/CartSection';
+import OrderTrackingModal from '../components/home/OrderTrackingModal';
+import OptionalsModal from '../components/home/OptionalsModal';
 
 const Home: React.FC = () => {
   const [menu, setMenu] = useState<Marmita[]>([]);
@@ -41,13 +46,10 @@ const Home: React.FC = () => {
 
   const phoneInputRef = useRef<HTMLInputElement>(null);
 
-  // LOGICA SENIOR: Verificação de Horário
   const isBusinessOpen = useMemo(() => {
     if (!config || !config.openingTime || !config.closingTime) return true;
-
     const now = new Date();
     const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
     return currentTimeStr >= config.openingTime && currentTimeStr <= config.closingTime;
   }, [config]);
 
@@ -82,48 +84,49 @@ const Home: React.FC = () => {
   useEffect(() => {
     const fetchCustomer = async () => {
       const cleanPhone = customerInfo.phone.replace(/\D/g, '');
+      // No Brasil, telefones fixos tem 10 dígitos e celulares 11.
       if (cleanPhone.length >= 10) {
         try {
           const existingCustomer = await db.getCustomer(cleanPhone);
           if (existingCustomer) {
-            // LOGICA SENIOR: Verifica se o bairro do cliente existe no cadastro de taxas
             const bairroSalvo = existingCustomer.neighborhood || '';
-            const bairroValido = bairros.find(b => b.name.toLowerCase().trim() === bairroSalvo.toLowerCase().trim());
+            const bairroValido = bairros.find(b =>
+              b.name.toLowerCase().trim() === bairroSalvo.toLowerCase().trim()
+            );
 
-            setCustomerInfo(prev => ({
-              ...prev,
-              name: existingCustomer.name,
-              cep: existingCustomer.cep || '',
-              street: existingCustomer.street || '',
-              number: existingCustomer.number || '',
-              complement: existingCustomer.complement || '',
-              // Se o bairro não estiver no cadastro de taxas, deixa vazio para escolha manual
-              neighborhood: bairroValido ? bairroValido.name : ''
-            }));
+            setCustomerInfo(prev => {
+              // Só preenchemos se o telefone ainda for o mesmo que buscamos
+              if (prev.phone.replace(/\D/g, '') !== cleanPhone) return prev;
+
+              return {
+                ...prev,
+                name: existingCustomer.name || prev.name,
+                cep: existingCustomer.cep || prev.cep,
+                street: existingCustomer.street || prev.street,
+                number: existingCustomer.number || prev.number,
+                complement: existingCustomer.complement || prev.complement,
+                neighborhood: bairroValido ? bairroValido.name : prev.neighborhood
+              };
+            });
           }
         } catch (e) {
-          console.debug("Novo cliente detectado");
+          console.debug("Busca de cliente falhou", e);
         }
       }
     };
-    const timer = setTimeout(fetchCustomer, 800);
+    const timer = setTimeout(fetchCustomer, 600);
     return () => clearTimeout(timer);
   }, [customerInfo.phone, bairros]);
 
   const handleCEPLookup = async (cep: string) => {
     const cleanCep = cep.replace(/\D/g, '');
     setCustomerInfo(prev => ({ ...prev, cep: cleanCep }));
-
     if (cleanCep.length === 8) {
       try {
         const res = await fetch(`https://viacep.com.br/ws/${cleanCep}/json/`);
         const data = await res.json();
         if (!data.erro) {
-          setCustomerInfo(prev => ({
-            ...prev,
-            street: data.logradouro,
-            neighborhood: data.bairro,
-          }));
+          setCustomerInfo(prev => ({ ...prev, street: data.logradouro, neighborhood: data.bairro }));
         }
       } catch (e) {
         console.error("Erro ao buscar CEP");
@@ -141,27 +144,18 @@ const Home: React.FC = () => {
 
   const addToCart = (marmita: Marmita, selectedOptionals?: Opcional[]) => {
     if (!isBusinessOpen) return;
-
-    // Se a marmita tem opcionais e nenhum foi passado, abre o modal
     if (marmita.gruposOpcionais && marmita.gruposOpcionais.length > 0 && !selectedOptionals) {
-      setOptionalModal({
-        show: true,
-        marmita,
-        selections: {}
-      });
+      setOptionalModal({ show: true, marmita, selections: {} });
       return;
     }
 
     setCart(prev => {
-      // Comparar se já existe no carrinho com os MESMOS opcionais
       const existing = prev.find(item => {
         const sameMarmita = item.marmita.id === marmita.id;
         if (!sameMarmita) return false;
-
         const optA = item.selectedOptionals || [];
         const optB = selectedOptionals || [];
         if (optA.length !== optB.length) return false;
-
         return optA.every(oa => optB.some(ob => ob.id === oa.id));
       });
 
@@ -230,28 +224,16 @@ const Home: React.FC = () => {
         total,
         status: 'Pendente',
         observations,
-        createdAt: new Date().toISOString()
+        createdAt: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString()
       };
 
       await db.saveOrder(order);
-
       localStorage.setItem('last_track_phone', cleanPhone);
       setSearchPhone(cleanPhone);
       handleTrackOrder(cleanPhone);
 
-      // RESET COMPLETO DO FORMULÁRIO PARA PRÓXIMO PEDIDO
       setCart([]);
-      setCustomerInfo({
-        phone: '',
-        name: '',
-        cep: '',
-        street: '',
-        number: '',
-        complement: '',
-        neighborhood: '',
-        payment: 'Pix',
-        observations: ''
-      });
+      setCustomerInfo({ phone: '', name: '', cep: '', street: '', number: '', complement: '', neighborhood: '', payment: 'Pix', observations: '' });
       setDeliveryMethod('Entrega');
 
       if (config) window.open(generateWhatsAppLink(order, config), '_blank');
@@ -260,11 +242,9 @@ const Home: React.FC = () => {
     }
   };
 
-
   const handleTrackOrder = async (phoneToSearch?: string) => {
     const phone = (phoneToSearch || searchPhone).replace(/\D/g, '');
     if (!phone) return;
-
     setIsSearchingOrder(true);
     try {
       const order = await db.getLatestOrder(phone);
@@ -281,13 +261,6 @@ const Home: React.FC = () => {
       setIsSearchingOrder(false);
     }
   };
-
-  const getStatusStep = (status: OrderStatus) => {
-    const steps = ['Pendente', 'Preparo', 'Entrega', 'Finalizado'];
-    return steps.indexOf(status);
-  };
-
-  if (isLoading) return <div className="p-20 text-center animate-pulse text-orange-600 font-black tracking-widest uppercase">Consultando Disponibilidade...</div>;
 
   if (error) return (
     <div className="max-w-md mx-auto mt-20 p-8 bg-red-50 border border-red-200 rounded-3xl text-center">
@@ -320,11 +293,7 @@ const Home: React.FC = () => {
               </span>
             </div>
             <p className="text-[10px] text-stone-300 font-black uppercase tracking-[0.2em] mb-8">Agradecemos a compreensão</p>
-
-            <Link
-              to="/admin"
-              className="inline-flex items-center gap-2 px-8 py-3 bg-stone-100 rounded-2xl text-[10px] font-black uppercase tracking-widest text-stone-400 hover:text-orange-600 hover:bg-stone-200 transition-all border border-stone-200/50"
-            >
+            <Link to="/admin" className="inline-flex items-center gap-2 px-8 py-3 bg-stone-100 rounded-2xl text-[10px] font-black uppercase tracking-widest text-stone-400 hover:text-orange-600 hover:bg-stone-200 transition-all border border-stone-200/50">
               <i className="fas fa-lock text-[8px]"></i>
               Acesso Administrativo
             </Link>
@@ -372,433 +341,53 @@ const Home: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2">
-          <div className="flex items-center gap-4 mb-8">
-            <div className="h-10 w-2 bg-orange-600 rounded-full"></div>
-            <h2 className="text-3xl font-black text-stone-900 uppercase tracking-tight">O que temos para hoje?</h2>
-          </div>
+        <MenuSection
+          filteredMenu={filteredMenu}
+          isBusinessOpen={isBusinessOpen}
+          onAddToCart={addToCart}
+          loading={isLoading}
+        />
 
-          {filteredMenu.length === 0 ? (
-            <div className="bg-white p-16 rounded-[3rem] text-center border-2 border-dashed border-stone-200">
-              <i className="fas fa-clock text-5xl text-stone-200 mb-6"></i>
-              <p className="text-stone-400 font-bold text-xl uppercase">Estamos preparando as delícias de hoje!</p>
-              <p className="text-stone-300 text-sm mt-2">Em breve o cardápio estará disponível.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {filteredMenu.map(marmita => (
-                <div key={marmita.id} className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-stone-100 flex flex-col justify-between hover:shadow-2xl transition-all group relative overflow-hidden">
-                  {marmita.imageUrl && (
-                    <div className="w-full h-48 mb-6 rounded-[2rem] overflow-hidden shadow-md">
-                      <img src={marmita.imageUrl} alt={marmita.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
-                    </div>
-                  )}
-                  <div className="relative z-10 flex-1">
-                    <div className="flex justify-between items-start mb-6">
-                      <span className="text-[10px] font-black uppercase text-orange-600 bg-orange-50 px-4 py-1.5 rounded-full border border-orange-100">{marmita.category}</span>
-                      <div className="text-right">
-                        <span className="block text-[10px] text-stone-400 font-bold uppercase mb-1">Preço</span>
-                        <span className="font-black text-3xl text-stone-900">R$ {marmita.price.toFixed(2)}</span>
-                      </div>
-                    </div>
-                    <h3 className="text-2xl font-bold text-stone-900 mb-2 group-hover:text-orange-600 transition-colors">{marmita.name}</h3>
-                    {marmita.prepTime && (
-                      <div className="flex items-center gap-2 mb-3 text-stone-400">
-                        <i className="fas fa-clock text-orange-500"></i>
-                        <span className="text-xs font-black uppercase tracking-widest">{marmita.prepTime}</span>
-                      </div>
-                    )}
-                    <p className="text-stone-500 text-sm mb-8 leading-relaxed min-h-[3rem]">{marmita.description}</p>
-                  </div>
-                  <button
-                    onClick={() => addToCart(marmita)}
-                    disabled={!isBusinessOpen}
-                    className={`w-full py-5 rounded-2xl font-black transition-all transform active:scale-95 shadow-lg flex items-center justify-center gap-3 ${isBusinessOpen ? 'bg-stone-900 text-white hover:bg-orange-600' : 'bg-stone-100 text-stone-300 cursor-not-allowed shadow-none'
-                      }`}
-                  >
-                    <i className="fas fa-plus"></i>
-                    {isBusinessOpen ? 'ADICIONAR AO PEDIDO' : 'FECHADO NO MOMENTO'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="lg:col-span-1">
-          <div className="bg-white rounded-[3rem] shadow-2xl p-8 border border-stone-100 sticky top-24 overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-2 bg-orange-600"></div>
-            <h2 className="text-2xl font-black mb-8 text-stone-800 flex items-center gap-4">
-              <div className="bg-orange-50 p-3 rounded-2xl">
-                <i className="fas fa-shopping-basket text-orange-600"></i>
-              </div>
-              Seu Pedido
-            </h2>
-
-            <div className="mb-8 space-y-4 max-h-52 overflow-y-auto pr-2 no-scrollbar border-b border-stone-50 pb-6">
-              {cart.length === 0 ? (
-                <div className="py-10 text-center">
-                  <i className="fas fa-cart-arrow-down text-3xl text-stone-100 mb-2"></i>
-                  <p className="text-stone-400 text-sm font-bold uppercase">Carrinho Vazio</p>
-                </div>
-              ) : cart.map((item, index) => {
-                const itemPrice = item.marmita.price + (item.selectedOptionals || []).reduce((sum, opt) => sum + opt.precoAdicional, 0);
-                return (
-                  <div key={index} className="bg-stone-50 p-4 rounded-2xl border border-stone-100">
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="flex-1">
-                        <p className="font-bold text-sm text-stone-800">{item.marmita.name}</p>
-                        <p className="text-[10px] text-orange-600 font-black">R$ {itemPrice.toFixed(2)} un.</p>
-                      </div>
-                      <div className="flex items-center gap-4 bg-white px-3 py-1.5 rounded-xl border border-stone-200">
-                        <button onClick={() => updateCartQuantity(item.marmita.id, -1)} className="text-stone-400 hover:text-orange-600 transition-colors font-black text-lg">×</button>
-                        <span className="text-sm font-black w-4 text-center">{item.quantity}</span>
-                        <button onClick={() => updateCartQuantity(item.marmita.id, 1)} className="text-orange-600 font-black text-lg">+</button>
-                      </div>
-                    </div>
-                    {item.selectedOptionals && item.selectedOptionals.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {item.selectedOptionals.map(opt => (
-                          <span key={opt.id} className="text-[9px] bg-white border border-stone-200 text-stone-500 px-2 py-0.5 rounded-full font-bold">
-                            + {opt.nome}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="space-y-4 mb-8">
-              <div className="grid grid-cols-1 gap-4">
-                <div className="relative">
-                  <i className="fab fa-whatsapp absolute left-4 top-1/2 -translate-y-1/2 text-stone-300"></i>
-                  <input
-                    type="tel"
-                    ref={phoneInputRef}
-                    placeholder="Seu WhatsApp"
-                    value={customerInfo.phone}
-                    onChange={e => setCustomerInfo({ ...customerInfo, phone: e.target.value })}
-                    className="w-full pl-12 pr-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:border-orange-500 outline-none font-bold"
-                  />
-                </div>
-                <div className="relative">
-                  <i className="fas fa-user absolute left-4 top-1/2 -translate-y-1/2 text-stone-300"></i>
-                  <input type="text" placeholder="Seu Nome Completo" value={customerInfo.name} onChange={e => setCustomerInfo({ ...customerInfo, name: e.target.value })} className="w-full pl-12 pr-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:border-orange-500 outline-none font-bold" />
-                </div>
-              </div>
-
-              <div className="bg-stone-100 p-1 rounded-2xl flex">
-                <button
-                  onClick={() => setDeliveryMethod('Entrega')}
-                  className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${deliveryMethod === 'Entrega' ? 'bg-white text-orange-600 shadow-sm' : 'text-stone-400'}`}
-                >
-                  🚲 ENTREGA
-                </button>
-                <button
-                  onClick={() => setDeliveryMethod('Retirada')}
-                  className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${deliveryMethod === 'Retirada' ? 'bg-white text-orange-600 shadow-sm' : 'text-stone-400'}`}
-                >
-                  🏠 RETIRADA
-                </button>
-              </div>
-
-              {deliveryMethod === 'Entrega' && (
-                <div className="space-y-4 animate-fade-in p-4 bg-orange-50/50 rounded-3xl border border-orange-100/50">
-                  <input
-                    type="text"
-                    placeholder="CEP (Ex: 00000000)"
-                    value={customerInfo.cep}
-                    maxLength={8}
-                    onChange={e => handleCEPLookup(e.target.value)}
-                    className="w-full px-5 py-4 bg-white border border-orange-200 rounded-2xl text-sm font-black text-orange-600 focus:ring-2 ring-orange-100 outline-none"
-                  />
-                  <div className="grid grid-cols-3 gap-3">
-                    <input type="text" placeholder="Rua / Av." value={customerInfo.street} onChange={e => setCustomerInfo({ ...customerInfo, street: e.target.value })} className="col-span-2 px-5 py-4 bg-white border border-stone-200 rounded-2xl text-xs font-bold" />
-                    <input type="text" placeholder="Nº" value={customerInfo.number} onChange={e => setCustomerInfo({ ...customerInfo, number: e.target.value })} className="col-span-1 px-5 py-4 bg-white border border-stone-200 rounded-2xl text-xs font-bold" />
-                  </div>
-                  <select
-                    value={customerInfo.neighborhood}
-                    onChange={e => setCustomerInfo({ ...customerInfo, neighborhood: e.target.value })}
-                    className="w-full px-5 py-4 bg-white border border-stone-200 rounded-2xl text-xs font-black text-stone-700"
-                  >
-                    <option value="">Selecione o Bairro</option>
-                    {bairros.map(b => <option key={b.name} value={b.name}>{b.name} (R$ {b.deliveryFee.toFixed(2)})</option>)}
-                  </select>
-                </div>
-              )}
-
-              <div className="pt-4">
-                <p className="text-[10px] font-black uppercase text-stone-400 mb-3 tracking-widest text-center">Pagamento no Recebimento</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {['Pix', 'Cartão', 'Dinheiro'].map(p => (
-                    <button
-                      key={p}
-                      onClick={() => setCustomerInfo({ ...customerInfo, payment: p as any })}
-                      className={`py-3 rounded-2xl text-[10px] font-black border transition-all uppercase ${customerInfo.payment === p ? 'bg-stone-900 text-white border-stone-900 shadow-lg' : 'bg-white text-stone-400 border-stone-200'}`}
-                    >
-                      {p}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-4">
-                <label className="text-[10px] font-black uppercase text-stone-400 ml-4 tracking-widest">Observações do Pedido</label>
-                <textarea
-                  placeholder="Ex: Tirar cebola, ponto da carne, etc..."
-                  value={customerInfo.observations}
-                  onChange={e => setCustomerInfo({ ...customerInfo, observations: e.target.value })}
-                  rows={2}
-                  className="w-full mt-2 p-4 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:border-orange-500 outline-none font-medium resize-none"
-                />
-              </div>
-            </div>
-
-            <div className="pt-6 mt-6 border-t border-stone-100">
-              <div className="space-y-3 mb-6">
-                <div className="flex justify-between text-xs font-bold text-stone-400 uppercase tracking-widest">
-                  <span>Subtotal:</span>
-                  <span>R$ {subtotal.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between text-xs font-bold text-stone-400 uppercase tracking-widest">
-                  <span>Entrega:</span>
-                  <span>{selectedNeighborhoodFee > 0 ? `R$ ${selectedNeighborhoodFee.toFixed(2)}` : 'Grátis'}</span>
-                </div>
-                <div className="flex justify-between text-3xl font-black text-stone-900 pt-4 border-t border-dashed border-stone-200">
-                  <span className="text-xl">TOTAL:</span>
-                  <span className="text-orange-600">R$ {total.toFixed(2)}</span>
-                </div>
-              </div>
-
-              <button
-                onClick={handleCheckout}
-                disabled={cart.length === 0 || !isBusinessOpen}
-                className={`w-full py-6 rounded-[2rem] font-black shadow-2xl transition-all flex items-center justify-center gap-4 text-lg ${cart.length === 0 || !isBusinessOpen ? 'bg-stone-100 text-stone-300 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600 shadow-green-200 hover:-translate-y-1'
-                  }`}
-              >
-                <i className="fab fa-whatsapp text-2xl"></i>
-                {isBusinessOpen ? 'FECHAR PEDIDO' : 'FORA DE HORÁRIO'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <CartSection
+          cart={cart}
+          updateCartQuantity={updateCartQuantity}
+          customerInfo={customerInfo}
+          setCustomerInfo={setCustomerInfo}
+          deliveryMethod={deliveryMethod}
+          setDeliveryMethod={setDeliveryMethod}
+          bairros={bairros}
+          onCEPLookup={handleCEPLookup}
+          subtotal={subtotal}
+          selectedNeighborhoodFee={selectedNeighborhoodFee}
+          total={total}
+          isBusinessOpen={isBusinessOpen}
+          onCheckout={handleCheckout}
+          phoneInputRef={phoneInputRef}
+        />
       </div>
 
-      {/* MODAL DE STATUS DO PEDIDO */}
-      {showStatusModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-stone-900/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl overflow-hidden relative">
-            <button
-              onClick={() => { setShowStatusModal(false); setTrackedOrder(null); }}
-              className="absolute top-6 right-6 w-10 h-10 bg-stone-100 rounded-full flex items-center justify-center text-stone-400 hover:text-red-500 transition-all"
-            >
-              <i className="fas fa-times"></i>
-            </button>
+      <OrderTrackingModal
+        show={showStatusModal}
+        onClose={() => { setShowStatusModal(false); setTrackedOrder(null); }}
+        trackedOrder={trackedOrder}
+        searchPhone={searchPhone}
+        setSearchPhone={setSearchPhone}
+        onTrack={handleTrackOrder}
+        isSearching={isSearchingOrder}
+        onResetTrackedOrder={() => { setTrackedOrder(null); setShowStatusModal(false); }}
+      />
 
-            <div className="p-8">
-              {!trackedOrder ? (
-                <div className="text-center py-10">
-                  <div className="bg-orange-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-orange-600">
-                    <i className="fas fa-search-location text-3xl"></i>
-                  </div>
-                  <h3 className="text-2xl font-black text-stone-900 mb-2">Rastrear Pedido</h3>
-                  <p className="text-stone-400 text-sm mb-8 font-medium">Insira seu WhatsApp para ver o status</p>
-
-                  <div className="space-y-4">
-                    <input
-                      type="tel"
-                      placeholder="Ex: 5511999999999"
-                      value={searchPhone}
-                      onChange={e => setSearchPhone(e.target.value)}
-                      className="w-full p-5 bg-stone-50 border border-stone-200 rounded-2xl text-center font-black tracking-widest text-lg outline-none focus:border-orange-500"
-                    />
-                    <button
-                      onClick={() => handleTrackOrder()}
-                      disabled={isSearchingOrder}
-                      className="w-full bg-stone-900 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-orange-600 transition-all"
-                    >
-                      {isSearchingOrder ? 'BUSCANDO...' : 'VER MEU PEDIDO'}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="animate-fade-in">
-                  <div className="text-center mb-10">
-                    <span className="text-[10px] font-black bg-stone-900 text-white px-3 py-1 rounded-full uppercase mb-4 inline-block">PEDIDO #{trackedOrder.id.slice(-4)}</span>
-                    <h3 className="text-2xl font-black text-stone-900">Olá, {trackedOrder.customerName.split(' ')[0]}!</h3>
-                    <p className="text-stone-400 text-xs font-bold uppercase mt-1">Status atual: <span className="text-orange-600">{trackedOrder.status}</span></p>
-                  </div>
-
-                  <div className="relative mb-12 px-6">
-                    <div className="absolute top-1/2 left-6 right-6 h-1 bg-stone-100 -translate-y-1/2"></div>
-                    <div
-                      className="absolute top-1/2 left-6 h-1 bg-orange-600 -translate-y-1/2 transition-all duration-1000"
-                      style={{ width: `${(getStatusStep(trackedOrder.status) / 3) * 100}%` }}
-                    ></div>
-
-                    <div className="relative flex justify-between">
-                      {[
-                        { s: 'Pendente', i: 'fa-clock' },
-                        { s: 'Preparo', i: 'fa-fire-burner' },
-                        { s: 'Entrega', i: 'fa-motorcycle' },
-                        { s: 'Finalizado', i: 'fa-check-double' }
-                      ].map((step, idx) => {
-                        const isActive = getStatusStep(trackedOrder.status) >= idx;
-                        return (
-                          <div key={step.s} className="flex flex-col items-center gap-2">
-                            <div className={`w-12 h-12 rounded-full flex items-center justify-center z-10 transition-all duration-500 border-4 ${isActive ? 'bg-orange-600 border-orange-100 text-white' : 'bg-white border-stone-100 text-stone-200'
-                              }`}>
-                              <i className={`fas ${step.i} text-lg`}></i>
-                            </div>
-                            <span className={`text-[10px] font-black uppercase ${isActive ? 'text-stone-900' : 'text-stone-300'}`}>{step.s}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="bg-stone-50 p-6 rounded-3xl mb-8 space-y-3">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-stone-400 font-bold uppercase">Pagamento:</span>
-                      <span className="text-stone-900 font-black">{trackedOrder.paymentMethod}</span>
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span className="text-stone-400 font-bold uppercase">Entrega em:</span>
-                      <span className="text-stone-900 font-black text-right max-w-[150px] truncate">{trackedOrder.customerAddress}</span>
-                    </div>
-                    <div className="pt-3 border-t border-stone-200 flex justify-between items-center">
-                      <span className="text-stone-900 font-black uppercase">Total:</span>
-                      <span className="text-orange-600 font-black text-xl">R$ {trackedOrder.total.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <button
-                      onClick={() => handleTrackOrder()}
-                      className="bg-stone-100 text-stone-600 py-4 rounded-2xl font-black text-xs uppercase hover:bg-stone-200 transition-all"
-                    >
-                      ATUALIZAR
-                    </button>
-                    <button
-                      onClick={() => { setTrackedOrder(null); setShowStatusModal(false); }}
-                      className="bg-stone-900 text-white py-4 rounded-2xl font-black text-xs uppercase hover:bg-orange-600 transition-all"
-                    >
-                      ENTENDI
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL DE OPCIONAIS */}
-      {optionalModal.show && optionalModal.marmita && (
-        <div className="fixed inset-0 z-[150] flex items-end md:items-center justify-center p-0 md:p-4 bg-stone-900/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white w-full max-w-xl rounded-t-[3rem] md:rounded-[3rem] shadow-2xl overflow-hidden relative max-h-[90vh] flex flex-col">
-            <div className="p-8 border-b border-stone-100 flex justify-between items-center bg-white sticky top-0 z-10">
-              <div>
-                <h3 className="text-2xl font-black text-stone-900 leading-none mb-1">{optionalModal.marmita.name}</h3>
-                <p className="text-orange-600 font-bold text-xs uppercase tracking-widest">Personalize seu pedido</p>
-              </div>
-              <button
-                onClick={() => setOptionalModal({ show: false, marmita: null, selections: {} })}
-                className="w-12 h-12 bg-stone-100 rounded-full flex items-center justify-center text-stone-400 hover:text-red-500 transition-all"
-              >
-                <i className="fas fa-times"></i>
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-8 space-y-10 no-scrollbar">
-              {optionalModal.marmita.gruposOpcionais?.map(grupo => (
-                <div key={grupo.id} className="space-y-4">
-                  <div className="flex justify-between items-end">
-                    <div>
-                      <h4 className="font-black text-stone-800 uppercase tracking-tighter text-lg">{grupo.nome}</h4>
-                      <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest">
-                        {grupo.minSelecao > 0 ? `Obrigatório • Selecione ${grupo.minSelecao}` : 'Opcional'}
-                        {grupo.maxSelecao > 1 ? ` • Máximo ${grupo.maxSelecao}` : (grupo.maxSelecao === 1 ? ' • Escolha 1' : '')}
-                      </p>
-                    </div>
-                    {grupo.minSelecao > 0 && !(optionalModal.selections[grupo.id]?.length >= grupo.minSelecao) && (
-                      <span className="bg-orange-100 text-orange-600 text-[8px] font-black px-2 py-1 rounded-md uppercase">Obrigatório</span>
-                    )}
-                  </div>
-
-                  <div className="space-y-3">
-                    {grupo.opcionais.map(opcional => {
-                      const isSelected = optionalModal.selections[grupo.id]?.some(s => s.id === opcional.id);
-                      return (
-                        <button
-                          key={opcional.id}
-                          disabled={!opcional.disponivel}
-                          onClick={() => {
-                            setOptionalModal(prev => {
-                              const current = prev.selections[grupo.id] || [];
-                              let next: Opcional[];
-
-                              if (isSelected) {
-                                next = current.filter(s => s.id !== opcional.id);
-                              } else {
-                                if (grupo.maxSelecao === 1) {
-                                  next = [opcional];
-                                } else if (grupo.maxSelecao > 0 && current.length < grupo.maxSelecao) {
-                                  next = [...current, opcional];
-                                } else if (grupo.maxSelecao > 0) {
-                                  alert(`Limite atingido! Você só pode escolher ${grupo.maxSelecao} item(ns) neste grupo.`);
-                                  return prev;
-                                } else {
-                                  // Caso maxSelecao seja 0 ou não definido (ilimitado)
-                                  next = [...current, opcional];
-                                }
-                              }
-                              return { ...prev, selections: { ...prev.selections, [grupo.id]: next } };
-                            });
-                          }}
-                          className={`w-full flex justify-between items-center p-5 rounded-2xl border-2 transition-all ${isSelected ? 'border-orange-500 bg-orange-50/50 shadow-md' : 'border-stone-100 bg-stone-50 hover:border-stone-200'
-                            } ${!opcional.disponivel ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
-                        >
-                          <div className="text-left">
-                            <p className={`font-bold transition-colors ${isSelected ? 'text-orange-700' : 'text-stone-700'}`}>{opcional.nome}</p>
-                            {opcional.precoAdicional > 0 && <p className="text-xs font-black text-orange-600">+ R$ {opcional.precoAdicional.toFixed(2)}</p>}
-                          </div>
-                          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-orange-500 border-orange-500 text-white animate-bounce-short' : 'bg-white border-stone-200'
-                            }`}>
-                            {isSelected && <i className="fas fa-check text-[10px]"></i>}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="p-8 bg-stone-50 border-t border-stone-100">
-              <button
-                disabled={optionalModal.marmita.gruposOpcionais?.some(g => (optionalModal.selections[g.id]?.length || 0) < g.minSelecao)}
-                onClick={() => {
-                  const allSelected = Object.values(optionalModal.selections).flat();
-                  addToCart(optionalModal.marmita!, allSelected);
-                  setOptionalModal({ show: false, marmita: null, selections: {} });
-                }}
-                className="w-full bg-stone-900 text-white py-6 rounded-3xl font-black uppercase tracking-widest hover:bg-orange-600 transition-all shadow-xl disabled:bg-stone-200 disabled:text-stone-400 disabled:cursor-not-allowed text-lg"
-              >
-                ADICIONAR AO PEDIDO
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        .animate-fade-in { animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-      `}</style>
+      <OptionalsModal
+        show={optionalModal.show}
+        marmita={optionalModal.marmita}
+        selections={optionalModal.selections}
+        setSelections={(selections) => setOptionalModal(prev => ({ ...prev, selections: typeof selections === 'function' ? selections(prev.selections) : selections }))}
+        onClose={() => setOptionalModal({ show: false, marmita: null, selections: {} })}
+        onConfirm={(marmita, allSelected) => {
+          addToCart(marmita, allSelected);
+          setOptionalModal({ show: false, marmita: null, selections: {} });
+        }}
+      />
     </div>
   );
 };

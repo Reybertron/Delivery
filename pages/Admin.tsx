@@ -4,6 +4,7 @@ import { DAYS_LIST } from '../constants';
 import { db } from '../services/database';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { toPng } from 'html-to-image';
 
 const modalStyles = `
   @keyframes modalIn {
@@ -15,7 +16,13 @@ const modalStyles = `
   }
 `;
 
-type AdminTab = 'pedidos' | 'caixa' | 'menu' | 'bairros' | 'clientes' | 'entregadores' | 'config';
+// Fallback para toast (caso não haja biblioteca instalada)
+const toast = {
+  success: (msg: string) => console.log('Success:', msg),
+  error: (msg: string) => console.error('Error:', msg),
+};
+
+type AdminTab = 'pedidos' | 'caixa' | 'menu' | 'bairros' | 'clientes' | 'entregadores' | 'marketing' | 'config';
 
 const Admin: React.FC = () => {
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -36,7 +43,11 @@ const Admin: React.FC = () => {
     tipo: 'Saída', categoria: 'Insumos', descricao: '', valor: 0
   });
 
-  const [globalDate, setGlobalDate] = useState(new Date().toISOString().split('T')[0]);
+  // Inicializa globalDate com a data local no formato YYYY-MM-DD
+  const [globalDate, setGlobalDate] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
   const [searchCustomer, setSearchCustomer] = useState('');
   const [searchOrderPhone, setSearchOrderPhone] = useState('');
 
@@ -58,6 +69,23 @@ const Admin: React.FC = () => {
   const [showLogoModal, setShowLogoModal] = useState(false);
   const [tempLogo, setTempLogo] = useState<string | null>(null);
   const processedOrders = useRef<Set<string>>(new Set());
+
+  // Estados de Marketing
+  const [marketingMessage, setMarketingMessage] = useState('');
+  const [marketingSentSet, setMarketingSentSet] = useState<Set<string>>(new Set());
+  const [marketingNeighborhoodFilter, setMarketingNeighborhoodFilter] = useState('Todos');
+  const [isGeneratingPoster, setIsGeneratingPoster] = useState(false);
+  const [lastGeneratedPoster, setLastGeneratedPoster] = useState<string | null>(null);
+
+  const currentDayMenu = useMemo(() => {
+    const dayIndex = new Date().getDay();
+    const days: DayOfWeek[] = [
+      DayOfWeek.SUNDAY, DayOfWeek.MONDAY, DayOfWeek.TUESDAY,
+      DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY
+    ];
+    const today = days[dayIndex];
+    return menu.filter(m => m.day === today && m.available);
+  }, [menu]);
 
   // Estados de Entregadores
   const [deliverers, setDeliverers] = useState<Deliverer[]>([]);
@@ -86,28 +114,62 @@ const Admin: React.FC = () => {
   const [grupoForm, setGrupoForm] = useState<Omit<GrupoOpcional, 'id' | 'opcionais'>>({
     nome: '', minSelecao: 0, maxSelecao: 1
   });
+
+  // Controle de Terminal Local
+  const [isLocalPrinter, setIsLocalPrinter] = useState(() => localStorage.getItem('is_local_printer') === 'true');
+
+  const toggleLocalPrinter = (val: boolean) => {
+    setIsLocalPrinter(val);
+    localStorage.setItem('is_local_printer', val.toString());
+    if (val) toast.success('Este dispositivo agora é um Terminal de Impressão!');
+  };
   const [opcionalForm, setOpcionalForm] = useState<Omit<Opcional, 'id'>>({
-    nome: '', precoAdicional: 0, disponivel: true
+    nome: '', precoAdicional: 0, disponivel: true, imageUrl: '', gerenciarEstoque: false, estoqueAtual: 0
   });
   const [isAddingOpcional, setIsAddingOpcional] = useState<string | false>(false);
+  const [editingOpcional, setEditingOpcional] = useState<Opcional | null>(null);
 
   useEffect(() => {
     const init = async () => {
       try {
-        const [mMenu, mBairros, mConfigs, mDeliverers, mGrupos] = await Promise.all([
+        const [mMenu, mBairros, mConfigs, mDeliverers, mGrupos, mLastPoster] = await Promise.all([
           db.getMenu(),
           db.getBairros(),
           db.getConfig(),
           db.getDeliverers(),
-          db.getGruposOpcionais()
+          db.getGruposOpcionais(),
+          db.getLatestMarketingPoster()
         ]);
         setMenu(mMenu);
         setBairros(mBairros);
         setConfig(mConfigs);
         setDeliverers(mDeliverers);
         setGruposOpcionais(mGrupos);
+        setLastGeneratedPoster(mLastPoster);
         setDbStatus('Online');
-        if (!mConfigs.adminPassword) setIsAuthorized(true);
+
+        // Template padrão de marketing
+        const daysArr: DayOfWeek[] = [
+          DayOfWeek.SUNDAY, DayOfWeek.MONDAY, DayOfWeek.TUESDAY,
+          DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY
+        ];
+        const currentIdx = new Date().getDay();
+
+        const menuString = mMenu
+          .filter(m => m.day === daysArr[currentIdx] && m.available)
+          .map(m => `• *${m.name}*`)
+          .join('\n');
+
+        setMarketingMessage(
+          `Olá *{nome}*! 🍱\n\nConfira o cardápio de hoje na *${mConfigs.businessName || 'Panelas da Vanda'}*:\n\n{cardapio}\n\nFaça seu pedido agora pelo link:\n{link}\n\nBom apetite! 😋`
+        );
+        // FAIL-SECURE: Only authorize if hasAdminPassword is EXPLICITLY false.
+        // If it's true, undefined, or truthy, require password.
+        if (mConfigs.hasAdminPassword === false) {
+          setIsAuthorized(true);
+        } else {
+          setIsAuthorized(false);
+        }
       } catch (e) {
         console.error("Falha de comunicação com DB");
         setDbStatus('Offline');
@@ -129,7 +191,8 @@ const Admin: React.FC = () => {
   // Lógica de Impressão Automática Reformulada para maior confiabilidade
   useEffect(() => {
     const processAutoPrint = async () => {
-      if (config?.autoPrint && orders.length > 0) {
+      // TRAVA DE SEGURANÇA: Só imprime se a função estiver ligada E este dispositivo for o terminal autorizado
+      if (config?.autoPrint && isLocalPrinter && orders.length > 0) {
         const pendingOrders = orders.filter(
           o => o.status === 'Pendente' && !processedOrders.current.has(o.id)
         );
@@ -538,9 +601,14 @@ const Admin: React.FC = () => {
   const handleSaveOpcional = async (grupoId: string) => {
     if (!opcionalForm.nome) return alert('Nome do opcional é obrigatório');
     try {
-      await db.saveOpcional(grupoId, opcionalForm);
-      setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true });
+      if (editingOpcional) {
+        await db.updateOpcional(editingOpcional.id, opcionalForm);
+      } else {
+        await db.saveOpcional(grupoId, opcionalForm);
+      }
+      setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true, imageUrl: '' });
       setIsAddingOpcional(false);
+      setEditingOpcional(null);
       await refreshData();
     } catch (e: any) { alert("Erro ao salvar opcional: " + (e.message || "Erro desconhecido")); }
   };
@@ -553,12 +621,27 @@ const Admin: React.FC = () => {
     } catch (e: any) { alert("Erro ao excluir opcional: " + (e.message || "Erro desconhecido")); }
   };
 
-  const handleToggleVinculo = async (marmitaId: string, grupoId: string, isViculado: boolean) => {
+  const handleToggleOpcionalDisponibilidade = async (opcional: Opcional) => {
     try {
-      if (isViculado) await db.desvincularGrupoMarmita(marmitaId, grupoId);
-      else await db.vincularGrupoMarmita(marmitaId, grupoId);
+      await db.updateOpcional(opcional.id, {
+        ...opcional,
+        disponivel: !opcional.disponivel
+      });
       await refreshData();
-    } catch (e: any) { alert("Erro ao atualizar vínculo: " + (e.message || "Erro desconhecido")); }
+    } catch (e: any) { alert("Erro ao atualizar disponibilidade: " + (e.message || "Erro desconhecido")); }
+  };
+
+  const handleToggleVinculo = async (marmitaId: string, grupoId: string, currentlyVinculado: boolean) => {
+    try {
+      if (currentlyVinculado) {
+        await db.desvincularGrupoMarmita(marmitaId, grupoId);
+      } else {
+        await db.vincularGrupoMarmita(marmitaId, grupoId);
+      }
+      await refreshData();
+    } catch (e: any) {
+      alert("Erro ao atualizar vínculo: " + (e.message || "Erro desconhecido"));
+    }
   };
 
   const handleDeleteDeliverer = async (id: string) => {
@@ -584,51 +667,66 @@ const Admin: React.FC = () => {
     } catch (e) { alert("Erro ao atribuir entregador"); }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (config && passwordInput === config.adminPassword) setIsAuthorized(true);
+    const authorized = await db.verifyAdminPassword(passwordInput);
+    if (authorized) setIsAuthorized(true);
     else alert('Senha Administrativa Inválida');
   };
 
   const getOrderHtml = (order: Order) => {
     const itemsHtml = Array.isArray(order.items)
       ? order.items.map(i => {
-        const optionalsPrice = (i.selectedOptionals || []).reduce((sum, opt) => sum + opt.precoAdicional, 0);
-        const itemTotal = ((i.quantity || 1) * ((i.marmita?.price || 0) + optionalsPrice));
-        const optionalsText = i.selectedOptionals && i.selectedOptionals.length > 0
-          ? `<div style="font-size: 11px; margin-left: 10px; font-style: italic;">+ ${i.selectedOptionals.map(o => o.nome).join(', ')}</div>`
+        const optionalsPrice = (i.selectedOptionals || []).reduce((sum, opt) => sum + (opt.precoAdicional || 0), 0);
+        const basePrice = i.marmita?.price || 0;
+        const itemTotal = (i.quantity || 1) * (basePrice + optionalsPrice);
+
+        const optionalsList = i.selectedOptionals && i.selectedOptionals.length > 0
+          ? i.selectedOptionals.map(o => `
+            <div style="font-size: 11px; margin-left: 15px; color: #333; display: flex; justify-content: space-between;">
+              <span>+ ${o.nome}</span>
+              <span>${o.precoAdicional > 0 ? `+ R$ ${o.precoAdicional.toFixed(2)}` : ''}</span>
+            </div>
+          `).join('')
           : '';
 
         return `
-          <div style="margin-bottom: 8px;">
-            <div class="item-row">
-              <span>${i.quantity}x ${i.marmita?.name || 'Item'}</span>
-              <span>R$${itemTotal.toFixed(2)}</span>
+          <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px dotted #ccc;">
+            <div class="item-row" style="font-size: 14px;">
+              <span>${i.quantity}x ${i.marmita?.name || 'Item'} (${i.marmita?.category || ''})</span>
+              <span>R$ ${(i.quantity * basePrice).toFixed(2)}</span>
             </div>
-            ${optionalsText}
+            ${optionalsList}
+            <div style="text-align: right; font-size: 12px; margin-top: 5px; font-weight: 900;">
+               Total do Item: R$ ${itemTotal.toFixed(2)}
+            </div>
           </div>
         `;
       }).join('')
       : '<div>Nenhum item detalhado</div>';
 
-    const dateStr = new Date(order.createdAt).toLocaleString('pt-BR');
+    // Formata a data de forma robusta, garantindo que o fuso horário local seja respeitado
+    const orderDate = new Date(order.createdAt);
+    const dateStr = orderDate.toLocaleDateString('pt-BR') + ' ' + orderDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
     return `
       <html>
       <head>
         <title>Pedido #${order.id.slice(-4)}</title>
         <style>
-          body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 5px; font-size: 13px; color: #000; font-weight: bold; background: #fff; }
-          .header { text-align: center; margin-bottom: 10px; }
-          .header h3 { margin: 0; font-size: 20px; font-weight: 900; text-transform: uppercase; }
-          .header p { margin: 2px 0; font-size: 14px; }
-          .divider { border-top: 2px dashed #000; margin: 10px 0; }
-          .label { font-weight: 900; font-size: 14px; }
-          .total-row { font-size: 16px; font-weight: 900; margin-top: 10px; display: flex; justify-content: space-between; border-top: 2px solid #000; pt: 5px; }
-          .item-list { margin: 10px 0; }
-          .info-block { margin-bottom: 8px; }
-          .item-row { display: flex; justify-content: space-between; margin-bottom: 5px; font-weight: bold; }
-          .obs-box { border: 1px solid #000; padding: 5px; margin-top: 10px; font-size: 11px; }
+          body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 10px; font-size: 14px; color: #000; font-weight: bold; background: #fff; line-height: 1.2; }
+          .header { text-align: center; margin-bottom: 15px; border-bottom: 2px dashed #000; padding-bottom: 10px; }
+          .header h3 { margin: 0; font-size: 22px; font-weight: 900; text-transform: uppercase; }
+          .header p { margin: 3px 0; font-size: 14px; }
+          .divider { border-top: 1px solid #000; margin: 10px 0; }
+          .label { font-weight: 900; font-size: 13px; text-decoration: underline; margin-bottom: 3px; }
+          .total-row { font-size: 18px; font-weight: 900; margin-top: 10px; display: flex; justify-content: space-between; border-top: 3px double #000; padding: 10px 0; }
+          .item-list { margin: 15px 0; }
+          .info-block { margin-bottom: 12px; }
+          .info-row { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 13px; }
+          .item-row { display: flex; justify-content: space-between; font-weight: 900; }
+          .obs-box { border: 1.5px solid #000; padding: 8px; margin-top: 12px; font-size: 13px; background-color: #f9f9f9; }
+          .footer { text-align: center; font-size: 11px; margin-top: 20px; font-style: italic; }
         </style>
       </head>
       <body>
@@ -673,15 +771,15 @@ const Admin: React.FC = () => {
 
         <div class="divider"></div>
 
-        <div style="display:flex; justify-content:space-between;">
+        <div class="info-row">
             <span>Forma Pagto:</span>
             <span>${order.paymentMethod}</span>
         </div>
-        <div style="display:flex; justify-content:space-between;">
+        <div class="info-row">
             <span>Subtotal:</span>
             <span>R$ ${order.subtotal.toFixed(2)}</span>
         </div>
-        <div style="display:flex; justify-content:space-between;">
+        <div class="info-row">
             <span>Taxa Entrega:</span>
             <span>R$ ${(order.deliveryFee || 0).toFixed(2)}</span>
         </div>
@@ -693,8 +791,8 @@ const Admin: React.FC = () => {
             <span style="font-size:16px;">R$ ${(order.total || 0).toFixed(2)}</span>
         </div>
         
-        <br>
-        <div style="text-align:center; font-size:10px;">
+        <div class="footer">
+           Obrigado pela preferência!<br>
            www.panelasdavanda.com.br
         </div>
       </body>
@@ -777,6 +875,24 @@ const Admin: React.FC = () => {
     }
   };
 
+  const handleSendMarketing = (customer: Customer) => {
+    const link = window.location.origin;
+    const menuListStr = currentDayMenu
+      .map(m => `• *${m.name}* - ${m.description}`)
+      .join('\n');
+
+    let finalMessage = marketingMessage
+      .replace(/{nome}/g, customer.name)
+      .replace(/{link}/g, link)
+      .replace(/{cardapio}/g, menuListStr);
+
+    const encodedMessage = encodeURIComponent(finalMessage);
+    const phone = customer.phone.replace(/\D/g, '');
+    window.open(`https://wa.me/55${phone}?text=${encodedMessage}`, '_blank');
+
+    setMarketingSentSet(prev => new Set(prev).add(customer.phone));
+  };
+
   const filteredMenuList = useMemo(() => {
     if (menuDayFilter === 'Todos') return menu;
     return menu.filter(m => m.day === menuDayFilter);
@@ -809,6 +925,14 @@ const Admin: React.FC = () => {
             <p className="text-[10px] font-black uppercase tracking-[0.3em] mt-2 flex items-center gap-2">
               DB Connection: <span className={dbStatus === 'Online' ? 'text-green-500' : 'text-red-500'}>{dbStatus}</span>
               <span className={`w-2 h-2 rounded-full ${dbStatus === 'Online' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+              {isLocalPrinter && (
+                <>
+                  <span className="mx-2 text-stone-200">|</span>
+                  <span className="text-blue-500 flex items-center gap-1">
+                    <i className="fas fa-print"></i> TERMINAL ATIVO
+                  </span>
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -816,19 +940,20 @@ const Admin: React.FC = () => {
         <div className="flex bg-white p-2 rounded-3xl shadow-sm border border-stone-200 overflow-x-auto no-scrollbar max-w-full">
           {[
             { id: 'pedidos', icon: 'fa-clipboard-list', label: 'Pedidos' },
-            { id: 'caixa', icon: 'fa-chart-pie', label: 'Financeiro' },
-            { id: 'menu', icon: 'fa-utensils', label: 'Cardápio' },
-            { id: 'bairros', icon: 'fa-truck-fast', label: 'Bairros' },
-            { id: 'entregadores', icon: 'fa-motorcycle', label: 'Entregadores' },
+            { id: 'caixa', icon: 'fa-chart-pie', label: 'Dinheiro' },
+            { id: 'menu', icon: 'fa-utensils', label: 'Menu' },
+            { id: 'bairros', icon: 'fa-truck-fast', label: 'Taxas' },
+            { id: 'entregadores', icon: 'fa-motorcycle', label: 'Entregas' },
+            { id: 'marketing', icon: 'fa-bullhorn', label: 'Marketing' },
             { id: 'clientes', icon: 'fa-address-book', label: 'Clientes' },
             { id: 'config', icon: 'fa-sliders', label: 'Config' }
           ].map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as AdminTab)}
-              className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center gap-3 whitespace-nowrap ${activeTab === tab.id ? 'bg-stone-900 text-white shadow-[0_20px_50px_rgba(0,0,0,0.1)] scale-105' : 'text-stone-400 hover:text-stone-900 hover:bg-stone-50'}`}
+              className={`px-4 py-3 rounded-2xl text-[9px] font-black uppercase tracking-[0.1em] transition-all flex flex-col items-center justify-center gap-1 min-w-[70px] ${activeTab === tab.id ? 'bg-stone-900 text-white shadow-xl scale-105' : 'text-stone-400 hover:text-stone-900 hover:bg-stone-50'}`}
             >
-              <i className={`fas ${tab.icon}`}></i>
+              <i className={`fas ${tab.icon} text-sm`}></i>
               {tab.label}
             </button>
           ))}
@@ -1302,19 +1427,30 @@ const Admin: React.FC = () => {
                       <p className="text-[9px] text-stone-300 uppercase font-black text-center py-4">Nenhum grupo cadastrado</p>
                     ) : (
                       gruposOpcionais.map(g => {
-                        const currentMarmitaInMenu = menu.find(m => m.id === editingMarmita?.id);
-                        const isVinculado = currentMarmitaInMenu?.gruposOpcionais?.some(v => v.id === g.id);
+                        const currentMarmitaInMenu = menu.find(m => String(m.id) === String(editingMarmita?.id));
+                        const isVinculado = currentMarmitaInMenu?.gruposOpcionais?.some(v => String(v.id) === String(g.id));
                         return (
                           <div key={g.id} className="flex items-center justify-between p-3 bg-white rounded-2xl border border-stone-100 shadow-sm">
                             <span className="text-[10px] font-bold text-stone-600 uppercase">{g.nome}</span>
                             <button
                               onClick={() => editingMarmita && handleToggleVinculo(editingMarmita.id, g.id, !!isVinculado)}
                               disabled={!editingMarmita}
-                              className={`text-[9px] font-black uppercase px-3 py-1 rounded-full transition-all ${!editingMarmita ? 'opacity-20 bg-stone-100 cursor-not-allowed' :
-                                isVinculado ? 'bg-orange-100 text-orange-600' : 'bg-stone-100 text-stone-400'
+                              className={`text-[9px] font-black uppercase px-4 py-2 rounded-full transition-all group/btn ${!editingMarmita ? 'opacity-20 bg-stone-100 cursor-not-allowed' :
+                                isVinculado
+                                  ? 'bg-orange-50 text-orange-600 border border-orange-200 hover:bg-red-50 hover:text-red-600 hover:border-red-200'
+                                  : 'bg-stone-100 text-stone-400 hover:bg-stone-900 hover:text-white'
                                 }`}
                             >
-                              {isVinculado ? 'Vínculado' : 'Vincular'}
+                              {isVinculado ? (
+                                <span className="flex items-center gap-2">
+                                  <span className="group-hover/btn:hidden">Vínculado</span>
+                                  <span className="hidden group-hover/btn:inline flex items-center gap-1">
+                                    <i className="fas fa-times text-[7px]"></i> Desvincular
+                                  </span>
+                                </span>
+                              ) : (
+                                'Vincular'
+                              )}
                             </button>
                           </div>
                         );
@@ -1527,6 +1663,14 @@ const Admin: React.FC = () => {
                   <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">WhatsApp para Pedidos</label>
                   <input type="text" value={config.businessWhatsApp} onChange={e => setConfig({ ...config, businessWhatsApp: e.target.value })} className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 shadow-sm" />
                 </div>
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Instagram (URL)</label>
+                  <input type="text" placeholder="https://instagram.com/sua-loja" value={config.instagramUrl || ''} onChange={e => setConfig({ ...config, instagramUrl: e.target.value })} className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 shadow-sm" />
+                </div>
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Facebook (URL)</label>
+                  <input type="text" placeholder="https://facebook.com/sua-loja" value={config.facebookUrl || ''} onChange={e => setConfig({ ...config, facebookUrl: e.target.value })} className="w-full p-6 bg-white rounded-3xl font-black text-stone-800 outline-none border-2 border-transparent focus:border-orange-500 shadow-sm" />
+                </div>
 
                 <div className="md:col-span-2 space-y-3">
                   <label className="text-[10px] font-black uppercase text-stone-400 ml-5 tracking-[0.2em]">Senha do Administrador</label>
@@ -1571,6 +1715,22 @@ const Admin: React.FC = () => {
                     <option value="PDF + Impressão">PDF + Abrir Janela de Impressão</option>
                     <option value="Apenas PDF">Apenas Download (Para Bridge/Sumatra)</option>
                   </select>
+                </div>
+
+                <div className="md:col-span-2 mt-8 p-8 bg-white border-2 border-dashed border-stone-200 rounded-[3rem] flex flex-col items-center text-center">
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${isLocalPrinter ? 'bg-green-100 text-green-600' : 'bg-stone-100 text-stone-400'}`}>
+                    <i className={`fas ${isLocalPrinter ? 'fa-print' : 'fa-print-slash'} text-2xl`}></i>
+                  </div>
+                  <h4 className="text-lg font-black text-stone-900 uppercase tracking-tighter mb-2">Terminal de Impressão Local</h4>
+                  <p className="text-[10px] text-stone-400 font-bold uppercase mb-6 max-w-sm">
+                    Ative esta opção apenas no computador da cozinha. Quando ativa, este computador abrirá o PDF de novos pedidos automaticamente.
+                  </p>
+                  <button
+                    onClick={() => toggleLocalPrinter(!isLocalPrinter)}
+                    className={`px-12 py-4 rounded-2xl font-black uppercase text-xs tracking-widest transition-all shadow-xl ${isLocalPrinter ? 'bg-green-600 text-white shadow-green-100' : 'bg-stone-900 text-white shadow-stone-200'}`}
+                  >
+                    {isLocalPrinter ? 'Desativar neste Dispositivo' : 'Ativar neste Dispositivo'}
+                  </button>
                 </div>
 
                 <h3 className="md:col-span-2 text-3xl font-black uppercase text-stone-900 flex items-center gap-6 tracking-tighter mt-8">
@@ -1855,351 +2015,733 @@ const Admin: React.FC = () => {
             </div>
           </div>
         )}
-      </div>
-
-      {/* MODAL DE UPLOAD DE LOGO */}
-
-      {
-        showLogoModal && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
-            <div className="bg-white w-full max-w-md rounded-[3.5rem] p-10 text-center shadow-2xl relative">
-              <button onClick={() => { setShowLogoModal(false); setTempLogo(null); }} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
-              <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-8">Atualizar Logomarca</h3>
-
-              <div className="w-48 h-48 bg-stone-50 rounded-[3rem] mx-auto mb-10 border-2 border-dashed border-stone-200 flex items-center justify-center overflow-hidden relative group">
-                {tempLogo || config?.logoUrl ? (
-                  <img src={tempLogo || config?.logoUrl} className="w-full h-full object-cover" />
-                ) : (
-                  <i className="fas fa-cloud-arrow-up text-5xl text-stone-200"></i>
-                )}
-                <label className="absolute inset-0 cursor-pointer flex items-center justify-center bg-stone-900/0 group-hover:bg-stone-900/40 transition-all opacity-0 group-hover:opacity-100">
-                  <span className="text-white font-black uppercase text-[10px] tracking-widest">Escolher Arquivo</span>
-                  <input type="file" className="hidden" accept="image/*" onChange={handleLogoUpload} />
-                </label>
-              </div>
-
-              <div className="space-y-4">
-                {tempLogo && (
-                  <button onClick={confirmLogoUpdate} className="w-full bg-green-500 text-white py-5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-green-600 transition-all">Confirmar Alteração</button>
-                )}
-                <button onClick={() => { setShowLogoModal(false); setTempLogo(null); }} className="w-full bg-stone-100 text-stone-400 py-5 rounded-2xl font-black uppercase text-[10px] tracking-widest">Cancelar</button>
+        {activeTab === 'marketing' && (
+          <div className="space-y-8 animate-fade-in">
+            <div className="flex flex-col md:flex-row justify-between items-center border-b border-stone-100 pb-8 gap-4">
+              <h3 className="text-2xl font-black uppercase text-stone-800 tracking-tight flex items-center gap-3">
+                <i className="fas fa-bullhorn text-orange-500"></i>
+                Central de Marketing
+              </h3>
+              <div className="flex items-center gap-4">
+                <div className="bg-orange-100 text-orange-700 px-5 py-2 rounded-full text-xs font-black uppercase tracking-widest">
+                  {customers.length} Clientes na Base
+                </div>
+                <div className="bg-green-100 text-green-700 px-5 py-2 rounded-full text-xs font-black uppercase tracking-widest">
+                  {marketingSentSet.size} Enviados Hoje
+                </div>
               </div>
             </div>
-          </div>
-        )
-      }
 
-      {/* MODAL DE EDIÇÃO DE CLIENTE */}
-      {
-        editingCustomer && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
-            <div className="bg-white w-full max-w-xl rounded-[3.5rem] p-12 shadow-2xl relative">
-              <button onClick={() => setEditingCustomer(null)} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
-              <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-8">Editar Cliente</h3>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* CONFIGURAÇÃO DA MENSAGEM */}
+              <div className="lg:col-span-1 space-y-6">
+                <div className="bg-stone-50 p-8 rounded-[2.5rem] border border-stone-100 sticky top-8">
+                  <h4 className="text-lg font-black uppercase text-stone-900 mb-6 flex items-center gap-2">
+                    <i className="fas fa-magic text-orange-500"></i>
+                    Ações de Conteúdo
+                  </h4>
+                  <button
+                    disabled={isGeneratingPoster}
+                    onClick={async () => {
+                      const menuElement = document.getElementById('menu-poster');
+                      if (!menuElement) return;
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Nome do Cliente</label>
-                  <input type="text" value={editingCustomer.name} onChange={e => setEditingCustomer({ ...editingCustomer, name: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 transition-all shadow-inner" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Telefone (ID)</label>
-                  <input type="text" readOnly value={editingCustomer.phone} className="w-full p-4 rounded-2xl border-2 border-stone-100 bg-stone-100 outline-none font-bold text-stone-400 cursor-not-allowed" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Rua / Av.</label>
-                  <input type="text" value={editingCustomer.street} onChange={e => setEditingCustomer({ ...editingCustomer, street: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 transition-all shadow-inner" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Número</label>
-                  <input type="text" value={editingCustomer.number} onChange={e => setEditingCustomer({ ...editingCustomer, number: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 transition-all shadow-inner" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Bairro</label>
-                  <select
-                    value={editingCustomer.neighborhood}
-                    onChange={e => setEditingCustomer({ ...editingCustomer, neighborhood: e.target.value })}
-                    className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 shadow-inner"
+                      try {
+                        setIsGeneratingPoster(true);
+
+                        // 1. Forçar visibilidade e posição real para o browser processar o layout
+                        menuElement.style.display = 'flex';
+                        menuElement.style.opacity = '1';
+                        menuElement.style.visibility = 'visible';
+                        menuElement.style.position = 'fixed';
+                        menuElement.style.left = '0';
+                        menuElement.style.top = '0';
+                        menuElement.style.zIndex = '-9999';
+
+                        // 2. Aguarda um tempo maior para garantir o reflow completo
+                        await new Promise(r => setTimeout(r, 1000));
+
+                        // 3. Captura com configurações de alta qualidade
+                        const dataUrl = await toPng(menuElement, {
+                          cacheBust: true,
+                          backgroundColor: '#1c1917',
+                          width: 600,
+                          pixelRatio: 2,
+                          style: {
+                            display: 'flex',
+                            opacity: '1',
+                            visibility: 'visible',
+                            position: 'fixed',
+                            left: '0',
+                            top: '0'
+                          }
+                        });
+
+                        // 4. Salva e Trata o Download
+                        await db.saveMarketingPoster(dataUrl);
+                        setLastGeneratedPoster(dataUrl);
+
+                        const link = document.createElement('a');
+                        link.download = `Cardapio_${new Date().toISOString().split('T')[0]}.png`;
+                        link.href = dataUrl;
+                        link.click();
+
+                        toast.success('Imagem gerada e salva no banco de dados!');
+                      } catch (err) {
+                        console.error("Erro na geração:", err);
+                        alert("Houve um erro na captura da imagem. Verifique se há pratos ativos no cardápio de hoje.");
+                      } finally {
+                        if (menuElement) {
+                          menuElement.style.display = 'none';
+                          menuElement.style.opacity = '0';
+                          menuElement.style.visibility = 'hidden';
+                          menuElement.style.left = '-9999px';
+                          menuElement.style.position = 'absolute';
+                        }
+                        setIsGeneratingPoster(false);
+                      }
+                    }}
+                    className={`w-full ${isGeneratingPoster ? 'bg-stone-400' : 'bg-orange-600 hover:bg-orange-700'} text-white py-5 rounded-[2rem] font-black uppercase text-[10px] tracking-widest shadow-xl shadow-orange-100 transition-all mb-8 flex items-center justify-center gap-3`}
                   >
-                    <option value="">Selecione...</option>
-                    {bairros.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-stone-400 ml-4">CEP</label>
-                  <input type="text" value={editingCustomer.cep} onChange={e => setEditingCustomer({ ...editingCustomer, cep: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 shadow-inner" />
-                </div>
-              </div>
+                    <i className={`fas ${isGeneratingPoster ? 'fa-spinner fa-spin' : 'fa-magic'} text-lg`}></i>
+                    {isGeneratingPoster ? 'Processando Arte...' : 'Gerar e Salvar Arte Atual'}
+                  </button>
 
-              <div className="flex gap-4 mt-10">
-                <button onClick={handleSaveCustomer} className="flex-1 bg-stone-900 text-white py-6 rounded-[2rem] font-black uppercase text-xs tracking-[0.2em] hover:bg-green-600 transition-all shadow-2xl hover:scale-[1.02] active:scale-95">Salvar Alterações</button>
-                <button onClick={() => setEditingCustomer(null)} className="flex-1 bg-stone-100 text-stone-400 py-6 rounded-[2rem] font-black uppercase text-[10px] tracking-widest">Cancelar</button>
-              </div>
-            </div>
-          </div>
-        )
-      }
-
-      {/* MODAL DE HISTÓRICO DE PEDIDOS POR CLIENTE */}
-      {
-        viewingCustomerOrders && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
-            <div className="bg-white w-full max-w-2xl max-h-[80vh] rounded-[3.5rem] p-10 shadow-2xl relative flex flex-col">
-              <button onClick={() => setViewingCustomerOrders(null)} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
-
-              <div className="mb-8">
-                <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-1">Histórico de Pedidos</h3>
-                <p className="text-stone-400 font-bold uppercase text-xs tracking-widest">{viewingCustomerOrders.name}</p>
-                <p className="text-orange-500 font-bold text-[10px] tracking-widest mt-1"><i className="fab fa-whatsapp"></i> {viewingCustomerOrders.phone}</p>
-              </div>
-
-              <div className="flex-1 overflow-y-auto pr-2 space-y-3 -mr-2 scrollbar-hide">
-                {orders.filter(o => o.customerPhone.replace(/\D/g, '') === viewingCustomerOrders.phone.replace(/\D/g, '')).length === 0 ? (
-                  <div className="text-center py-20 text-stone-300 font-black uppercase tracking-widest">Nenhum pedido encontrado</div>
-                ) : (
-                  orders.filter(o => o.customerPhone.replace(/\D/g, '') === viewingCustomerOrders.phone.replace(/\D/g, ''))
-                    .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime())
-                    .map(order => (
-                      <div key={order.id} className="p-6 rounded-[2rem] bg-stone-50 border border-stone-100 flex justify-between items-center group hover:bg-white hover:border-orange-200 transition-all">
-                        <div className="flex-1 pr-4">
-                          <div className="flex items-center gap-3 mb-3">
-                            <span className="text-[9px] font-black bg-stone-200 text-stone-600 px-3 py-1 rounded-full tracking-wider">{new Date(order.createdAt || '').toLocaleDateString('pt-BR')} • {new Date(order.createdAt || '').toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className={`text-[9px] font-black px-3 py-1 rounded-full uppercase tracking-wider ${['Finalizado'].includes(order.status) ? 'bg-green-100 text-green-600' : ['Cancelado'].includes(order.status) ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'}`}>{order.status}</span>
-                            <span className="text-[9px] font-black text-stone-300">#{order.id.slice(-4)}</span>
-                          </div>
-                          <p className="text-[11px] font-bold text-stone-700 leading-tight mb-2 line-clamp-2">{order.items.map(i => `${i.quantity}x ${i.marmita.name}`).join(', ')}</p>
-                          <p className="text-[10px] text-stone-400 font-black uppercase tracking-widest flex items-center gap-4">
-                            <span>Produtos: <span className="text-stone-900">R$ {order.subtotal.toFixed(2)}</span></span>
-                            <span>Taxa: <span className="text-stone-900">R$ {order.deliveryFee.toFixed(2)}</span></span>
-                            <span className="ml-auto text-xs text-orange-600">Total: R$ {order.total.toFixed(2)}</span>
-                          </p>
+                  {/* Visualização da Última Arte */}
+                  {lastGeneratedPoster && (
+                    <div className="mb-8 space-y-4">
+                      <h4 className="text-[10px] font-black uppercase text-stone-400 ml-4 tracking-widest">Última Arte Salva</h4>
+                      <div className="relative group rounded-[2rem] overflow-hidden border-2 border-orange-100 shadow-md">
+                        <img src={lastGeneratedPoster} className="w-full h-auto" alt="Último Cardápio" />
+                        <div className="absolute inset-0 bg-stone-900/60 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-4">
+                          <a
+                            href={lastGeneratedPoster}
+                            download={`Cardapio_Salvo.png`}
+                            className="bg-white text-stone-900 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-500 hover:text-white transition-all"
+                          >
+                            <i className="fas fa-download mr-2"></i> Baixar
+                          </a>
                         </div>
-                        <button onClick={() => handleManualPrint(order)} className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center text-stone-400 hover:text-stone-900 hover:bg-stone-100 transition-all shadow-md border border-stone-100">
-                          <i className="fas fa-print text-xl"></i>
-                        </button>
                       </div>
-                    ))
-                )}
+                    </div>
+                  )}
+
+                  <h4 className="text-lg font-black uppercase text-stone-900 mb-6 flex items-center gap-2">
+                    <i className="fas fa-comment-dots text-orange-500"></i>
+                    Mensagem Padrão
+                  </h4>
+                  <p className="text-[10px] text-stone-400 font-bold uppercase mb-4 leading-relaxed">
+                    Use <span className="text-orange-600">{`{nome}`}</span>, <span className="text-orange-600">{`{link}`}</span> e <span className="text-orange-600">{`{cardapio}`}</span> para preencher automaticamente.
+                  </p>
+                  <textarea
+                    value={marketingMessage}
+                    onChange={(e) => setMarketingMessage(e.target.value)}
+                    className="w-full h-80 p-6 bg-white rounded-3xl border-2 border-white focus:border-orange-500 outline-none font-bold text-stone-700 text-xs shadow-sm shadow-inner transition-all resize-none"
+                    placeholder="Escreva sua mensagem aqui..."
+                  />
+                  <div className="mt-4 p-4 bg-orange-50 rounded-2xl border border-orange-100">
+                    <p className="text-[9px] text-orange-700 font-bold uppercase tracking-wider mb-1">Dica de Conversão:</p>
+                    <p className="text-[9px] text-orange-600 leading-normal">
+                      Mantenha a mensagem curta e amigável. Use emojis para destacar o link. O link redireciona direto para o seu cardápio!
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* LISTA DE CLIENTES E FILTROS */}
+              <div className="lg:col-span-2 space-y-6">
+                <div className="bg-white p-6 rounded-[2.5rem] border border-stone-100 shadow-sm flex flex-col md:flex-row gap-4 items-center">
+                  <div className="flex-1 w-full relative">
+                    <i className="fas fa-search absolute left-6 top-1/2 -translate-y-1/2 text-stone-300"></i>
+                    <input
+                      type="text"
+                      placeholder="Buscar por nome ou telefone..."
+                      value={searchCustomer}
+                      onChange={(e) => setSearchCustomer(e.target.value)}
+                      className="w-full pl-14 pr-6 py-4 bg-stone-50 rounded-2xl border-none outline-none font-bold text-xs"
+                    />
+                  </div>
+                  <div className="relative w-full md:w-auto">
+                    <i className="fas fa-filter absolute left-6 top-1/2 -translate-y-1/2 text-stone-300 z-10"></i>
+                    <select
+                      value={marketingNeighborhoodFilter}
+                      onChange={(e) => setMarketingNeighborhoodFilter(e.target.value)}
+                      className="w-full md:w-56 pl-14 pr-10 py-4 bg-stone-50 rounded-2xl border-none outline-none font-black uppercase text-[10px] appearance-none cursor-pointer relative"
+                    >
+                      <option value="Todos">Todos os Bairros</option>
+                      {bairros.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </select>
+                    <i className="fas fa-chevron-down absolute right-6 top-1/2 -translate-y-1/2 text-stone-300 pointer-events-none"></i>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {customers
+                    .filter(c => {
+                      const matchesSearch = (c.name || '').toLowerCase().includes(searchCustomer.toLowerCase()) || (c.phone || '').includes(searchCustomer);
+                      const matchesNeighborhood = marketingNeighborhoodFilter === 'Todos' || c.neighborhood === marketingNeighborhoodFilter;
+                      return matchesSearch && matchesNeighborhood;
+                    })
+                    .map(customer => {
+                      const isSent = marketingSentSet.has(customer.phone);
+                      return (
+                        <div key={customer.phone} className="bg-white p-6 rounded-[2.5rem] border border-stone-100 shadow-sm hover:shadow-md transition-all flex items-center justify-between group">
+                          <div className="flex items-center gap-4">
+                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-lg transition-all ${isSent ? 'bg-green-100 text-green-600 scale-90' : 'bg-stone-50 text-stone-300 group-hover:bg-orange-50 group-hover:text-orange-500'}`}>
+                              <i className={isSent ? 'fas fa-check' : 'fas fa-user'}></i>
+                            </div>
+                            <div>
+                              <h5 className="font-black text-stone-800 text-sm uppercase tracking-tighter truncate max-w-[150px]">{customer.name}</h5>
+                              <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest">{customer.neighborhood}</p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleSendMarketing(customer)}
+                            className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${isSent ? 'bg-stone-100 text-stone-400 cursor-default' : 'bg-[#25D366] text-white shadow-lg shadow-green-100 hover:scale-110 active:scale-95'}`}
+                          >
+                            <i className="fab fa-whatsapp text-xl"></i>
+                          </button>
+                        </div>
+                      );
+                    })
+                  }
+                  {customers.length === 0 && (
+                    <div className="col-span-full py-24 text-center text-stone-300 font-black uppercase tracking-widest bg-stone-50 rounded-[4rem] border-2 border-dashed border-stone-200">
+                      <i className="fas fa-users-slash text-4xl mb-4 block"></i>
+                      Nenhum cliente na base
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        )
-      }
+        )}
 
-      <style>{`
+        {/* MODAL DE UPLOAD DE LOGO */}
+
+        {
+          showLogoModal && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
+              <div className="bg-white w-full max-w-md rounded-[3.5rem] p-10 text-center shadow-2xl relative">
+                <button onClick={() => { setShowLogoModal(false); setTempLogo(null); }} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
+                <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-8">Atualizar Logomarca</h3>
+
+                <div className="w-48 h-48 bg-stone-50 rounded-[3rem] mx-auto mb-10 border-2 border-dashed border-stone-200 flex items-center justify-center overflow-hidden relative group">
+                  {tempLogo || config?.logoUrl ? (
+                    <img src={tempLogo || config?.logoUrl} className="w-full h-full object-cover" />
+                  ) : (
+                    <i className="fas fa-cloud-arrow-up text-5xl text-stone-200"></i>
+                  )}
+                  <label className="absolute inset-0 cursor-pointer flex items-center justify-center bg-stone-900/0 group-hover:bg-stone-900/40 transition-all opacity-0 group-hover:opacity-100">
+                    <span className="text-white font-black uppercase text-[10px] tracking-widest">Escolher Arquivo</span>
+                    <input type="file" className="hidden" accept="image/*" onChange={handleLogoUpload} />
+                  </label>
+                </div>
+
+                <div className="space-y-4">
+                  {tempLogo && (
+                    <button onClick={confirmLogoUpdate} className="w-full bg-green-500 text-white py-5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-green-600 transition-all">Confirmar Alteração</button>
+                  )}
+                  <button onClick={() => { setShowLogoModal(false); setTempLogo(null); }} className="w-full bg-stone-100 text-stone-400 py-5 rounded-2xl font-black uppercase text-[10px] tracking-widest">Cancelar</button>
+                </div>
+              </div>
+            </div>
+          )
+        }
+
+        {/* MODAL DE EDIÇÃO DE CLIENTE */}
+        {
+          editingCustomer && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
+              <div className="bg-white w-full max-w-xl rounded-[3.5rem] p-12 shadow-2xl relative">
+                <button onClick={() => setEditingCustomer(null)} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
+                <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-8">Editar Cliente</h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Nome do Cliente</label>
+                    <input type="text" value={editingCustomer.name} onChange={e => setEditingCustomer({ ...editingCustomer, name: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 transition-all shadow-inner" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Telefone (ID)</label>
+                    <input type="text" readOnly value={editingCustomer.phone} className="w-full p-4 rounded-2xl border-2 border-stone-100 bg-stone-100 outline-none font-bold text-stone-400 cursor-not-allowed" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Rua / Av.</label>
+                    <input type="text" value={editingCustomer.street} onChange={e => setEditingCustomer({ ...editingCustomer, street: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 transition-all shadow-inner" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Número</label>
+                    <input type="text" value={editingCustomer.number} onChange={e => setEditingCustomer({ ...editingCustomer, number: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 transition-all shadow-inner" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Bairro</label>
+                    <select
+                      value={editingCustomer.neighborhood}
+                      onChange={e => setEditingCustomer({ ...editingCustomer, neighborhood: e.target.value })}
+                      className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 shadow-inner"
+                    >
+                      <option value="">Selecione...</option>
+                      {bairros.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-stone-400 ml-4">CEP</label>
+                    <input type="text" value={editingCustomer.cep} onChange={e => setEditingCustomer({ ...editingCustomer, cep: e.target.value })} className="w-full p-4 rounded-2xl border-2 border-stone-50 bg-stone-50 outline-none font-bold focus:border-orange-500 shadow-inner" />
+                  </div>
+                </div>
+
+                <div className="flex gap-4 mt-10">
+                  <button onClick={handleSaveCustomer} className="flex-1 bg-stone-900 text-white py-6 rounded-[2rem] font-black uppercase text-xs tracking-[0.2em] hover:bg-green-600 transition-all shadow-2xl hover:scale-[1.02] active:scale-95">Salvar Alterações</button>
+                  <button onClick={() => setEditingCustomer(null)} className="flex-1 bg-stone-100 text-stone-400 py-6 rounded-[2rem] font-black uppercase text-[10px] tracking-widest">Cancelar</button>
+                </div>
+              </div>
+            </div>
+          )
+        }
+
+        {/* MODAL DE HISTÓRICO DE PEDIDOS POR CLIENTE */}
+        {
+          viewingCustomerOrders && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
+              <div className="bg-white w-full max-w-2xl max-h-[80vh] rounded-[3.5rem] p-10 shadow-2xl relative flex flex-col">
+                <button onClick={() => setViewingCustomerOrders(null)} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
+
+                <div className="mb-8">
+                  <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-1">Histórico de Pedidos</h3>
+                  <p className="text-stone-400 font-bold uppercase text-xs tracking-widest">{viewingCustomerOrders.name}</p>
+                  <p className="text-orange-500 font-bold text-[10px] tracking-widest mt-1"><i className="fab fa-whatsapp"></i> {viewingCustomerOrders.phone}</p>
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-2 space-y-3 -mr-2 scrollbar-hide">
+                  {orders.filter(o => o.customerPhone.replace(/\D/g, '') === viewingCustomerOrders.phone.replace(/\D/g, '')).length === 0 ? (
+                    <div className="text-center py-20 text-stone-300 font-black uppercase tracking-widest">Nenhum pedido encontrado</div>
+                  ) : (
+                    orders.filter(o => o.customerPhone.replace(/\D/g, '') === viewingCustomerOrders.phone.replace(/\D/g, ''))
+                      .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime())
+                      .map(order => (
+                        <div key={order.id} className="p-6 rounded-[2rem] bg-stone-50 border border-stone-100 flex justify-between items-center group hover:bg-white hover:border-orange-200 transition-all">
+                          <div className="flex-1 pr-4">
+                            <div className="flex items-center gap-3 mb-3">
+                              <span className="text-[9px] font-black bg-stone-200 text-stone-600 px-3 py-1 rounded-full tracking-wider">{new Date(order.createdAt || '').toLocaleDateString('pt-BR')} • {new Date(order.createdAt || '').toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                              <span className={`text-[9px] font-black px-3 py-1 rounded-full uppercase tracking-wider ${['Finalizado'].includes(order.status) ? 'bg-green-100 text-green-600' : ['Cancelado'].includes(order.status) ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'}`}>{order.status}</span>
+                              <span className="text-[9px] font-black text-stone-300">#{order.id.slice(-4)}</span>
+                            </div>
+                            <p className="text-[11px] font-bold text-stone-700 leading-tight mb-2 line-clamp-2">{order.items.map(i => `${i.quantity}x ${i.marmita.name}`).join(', ')}</p>
+                            <p className="text-[10px] text-stone-400 font-black uppercase tracking-widest flex items-center gap-4">
+                              <span>Produtos: <span className="text-stone-900">R$ {order.subtotal.toFixed(2)}</span></span>
+                              <span>Taxa: <span className="text-stone-900">R$ {order.deliveryFee.toFixed(2)}</span></span>
+                              <span className="ml-auto text-xs text-orange-600">Total: R$ {order.total.toFixed(2)}</span>
+                            </p>
+                          </div>
+                          <button onClick={() => handleManualPrint(order)} className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center text-stone-400 hover:text-stone-900 hover:bg-stone-100 transition-all shadow-md border border-stone-100">
+                            <i className="fas fa-print text-xl"></i>
+                          </button>
+                        </div>
+                      ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        }
+
+        <style>{`
         .animate-fade-in { animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .no-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
-      {/* MODAL DE ATRIBUIÇÃO DE ENTREGADOR */}
-      {showAssignModal && orderToAssign && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
-          <div className="bg-white w-full max-w-lg rounded-[3.5rem] p-10 shadow-2xl relative">
-            <button onClick={() => setShowAssignModal(false)} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
-            <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-2">Despachar Pedido</h3>
-            <p className="text-stone-400 font-bold uppercase text-[10px] tracking-widest mb-8">Pedido #{orderToAssign.id.slice(-4)} • {orderToAssign.customerName}</p>
+        {/* MODAL DE ATRIBUIÇÃO DE ENTREGADOR */}
+        {showAssignModal && orderToAssign && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-stone-900/90 backdrop-blur-md animate-fade-in">
+            <div className="bg-white w-full max-w-lg rounded-[3.5rem] p-10 shadow-2xl relative">
+              <button onClick={() => setShowAssignModal(false)} className="absolute top-8 right-8 text-stone-300 hover:text-stone-900"><i className="fas fa-times text-xl"></i></button>
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900 mb-2">Despachar Pedido</h3>
+              <p className="text-stone-400 font-bold uppercase text-[10px] tracking-widest mb-8">Pedido #{orderToAssign.id.slice(-4)} • {orderToAssign.customerName}</p>
 
-            <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 no-scrollbar">
-              {deliverers.filter(d => d.isActive && d.status === 'Disponível').length === 0 ? (
-                <div className="py-10 text-center text-stone-300 font-black uppercase text-xs">Nenhum entregador disponível</div>
-              ) : deliverers.filter(d => d.isActive && d.status === 'Disponível').map(d => (
-                <button
-                  key={d.id}
-                  onClick={() => handleAssignDeliverer(d.id, d.name)}
-                  className="w-full flex items-center gap-4 p-5 rounded-3xl bg-stone-50 border border-stone-100 hover:border-blue-500 hover:bg-blue-50 transition-all text-left"
-                >
-                  <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-blue-600 shadow-sm">
-                    <i className="fas fa-motorcycle text-xl"></i>
-                  </div>
-                  <div>
-                    <p className="font-black text-stone-800 uppercase text-xs">{d.name}</p>
-                    <p className="text-[10px] text-stone-400 font-bold">{d.vehicleType} • {d.vehiclePlate}</p>
-                  </div>
-                  <i className="fas fa-chevron-right ml-auto text-stone-300"></i>
-                </button>
-              ))}
-            </div>
-
-            <button onClick={() => setShowAssignModal(false)} className="w-full mt-8 bg-stone-100 text-stone-400 py-5 rounded-2xl font-black uppercase text-[10px] tracking-widest">Cancelar</button>
-          </div>
-        </div>
-      )}
-
-      {/* Modal de Gerenciamento de Opcionais */}
-      {showOpcionalModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-stone-900/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl shadow-stone-900/20 flex flex-col max-h-[90vh] animate-modal-in overflow-hidden relative">
-            <div className="p-8 border-b border-stone-100 flex justify-between items-center bg-stone-50/50">
-              <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900">Gerenciar Opcionais</h3>
-              <button
-                onClick={() => {
-                  setShowOpcionalModal(false);
-                  setEditingGrupo(null);
-                  setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
-                }}
-                className="w-12 h-12 bg-white rounded-2xl shadow-md flex items-center justify-center hover:bg-red-50 hover:text-red-500 transition-all text-stone-400"
-              >
-                <i className="fas fa-times"></i>
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-8 space-y-8">
-              <style>{modalStyles}</style>
-              {/* Formulário de Grupo */}
-              <div className="bg-orange-50/50 p-6 rounded-[2rem] border border-orange-100 space-y-4">
-                <h4 className="text-xs font-black uppercase text-orange-600 px-2">
-                  {editingGrupo ? 'Editar Grupo' : 'Novo Grupo de Escolha'}
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Nome (Ex: Escolha o Feijão)</label>
-                    <input
-                      type="text"
-                      value={grupoForm.nome}
-                      onChange={e => setGrupoForm({ ...grupoForm, nome: e.target.value })}
-                      className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Min.</label>
-                      <input
-                        type="number"
-                        value={grupoForm.minSelecao}
-                        onChange={e => setGrupoForm({ ...grupoForm, minSelecao: parseInt(e.target.value) })}
-                        className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Max.</label>
-                      <input
-                        type="number"
-                        value={grupoForm.maxSelecao}
-                        onChange={e => setGrupoForm({ ...grupoForm, maxSelecao: parseInt(e.target.value) })}
-                        className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div className="flex gap-2">
+              <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 no-scrollbar">
+                {deliverers.filter(d => d.isActive && d.status === 'Disponível').length === 0 ? (
+                  <div className="py-10 text-center text-stone-300 font-black uppercase text-xs">Nenhum entregador disponível</div>
+                ) : deliverers.filter(d => d.isActive && d.status === 'Disponível').map(d => (
                   <button
-                    onClick={handleSaveGrupo}
-                    className="flex-1 bg-stone-900 text-white font-black uppercase text-[10px] py-4 rounded-2xl hover:bg-orange-600 transition-all shadow-lg active:scale-95"
+                    key={d.id}
+                    onClick={() => handleAssignDeliverer(d.id, d.name)}
+                    className="w-full flex items-center gap-4 p-5 rounded-3xl bg-stone-50 border border-stone-100 hover:border-blue-500 hover:bg-blue-50 transition-all text-left"
                   >
-                    {editingGrupo ? 'Atualizar Grupo' : 'Cadastrar Grupo'}
+                    <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-blue-600 shadow-sm">
+                      <i className="fas fa-motorcycle text-xl"></i>
+                    </div>
+                    <div>
+                      <p className="font-black text-stone-800 uppercase text-xs">{d.name}</p>
+                      <p className="text-[10px] text-stone-400 font-bold">{d.vehicleType} • {d.vehiclePlate}</p>
+                    </div>
+                    <i className="fas fa-chevron-right ml-auto text-stone-300"></i>
                   </button>
-                  {editingGrupo && (
-                    <button
-                      onClick={() => {
-                        setEditingGrupo(null);
-                        setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
-                      }}
-                      className="p-4 bg-white text-stone-400 rounded-2xl hover:text-red-500 shadow-sm transition-all"
-                    >
-                      <i className="fas fa-undo"></i>
-                    </button>
-                  )}
-                </div>
+                ))}
               </div>
 
-              {/* Lista de Grupos */}
-              <div className="space-y-4">
-                <h4 className="text-xs font-black uppercase text-stone-400 px-2 tracking-widest">Grupos Existentes</h4>
-                <div className="space-y-4">
-                  {gruposOpcionais.map(g => (
-                    <div key={g.id} className="bg-stone-50 rounded-[2.5rem] border border-stone-100 p-6 space-y-4 overflow-hidden">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <p className="text-sm font-black uppercase text-stone-900">{g.nome}</p>
-                          <p className="text-[9px] font-bold text-stone-400 uppercase">Min: {g.minSelecao} | Max: {g.maxSelecao}</p>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              setEditingGrupo(g);
-                              setGrupoForm({ nome: g.nome, minSelecao: g.minSelecao, maxSelecao: g.maxSelecao });
-                            }}
-                            className="w-8 h-8 rounded-full bg-white text-stone-400 hover:text-orange-500 shadow-sm flex items-center justify-center transition-all"
-                          >
-                            <i className="fas fa-edit text-[10px]"></i>
-                          </button>
-                          <button
-                            onClick={() => handleDeleteGrupo(g.id)}
-                            className="w-8 h-8 rounded-full bg-white text-stone-400 hover:text-red-500 shadow-sm flex items-center justify-center transition-all"
-                          >
-                            <i className="fas fa-trash text-[10px]"></i>
-                          </button>
-                        </div>
-                      </div>
+              <button onClick={() => setShowAssignModal(false)} className="w-full mt-8 bg-stone-100 text-stone-400 py-5 rounded-2xl font-black uppercase text-[10px] tracking-widest">Cancelar</button>
+            </div>
+          </div>
+        )}
 
-                      {/* Opcionais do Grupo */}
-                      <div className="pl-4 border-l-2 border-stone-200 space-y-2">
-                        {g.opcionais.map(opt => (
-                          <div key={opt.id} className="flex justify-between items-center bg-white/50 p-2 rounded-xl">
-                            <span className="text-[10px] font-medium text-stone-600">{opt.nome} (+ R$ {opt.precoAdicional.toFixed(2)})</span>
-                            <button onClick={() => handleDeleteOpcional(opt.id)} className="text-stone-300 hover:text-red-500">
-                              <i className="fas fa-times-circle text-[10px]"></i>
+        {/* Modal de Gerenciamento de Opcionais */}
+        {showOpcionalModal && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-stone-900/60 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl shadow-stone-900/20 flex flex-col max-h-[90vh] animate-modal-in overflow-hidden relative">
+              <div className="p-8 border-b border-stone-100 flex justify-between items-center bg-stone-50/50">
+                <h3 className="text-2xl font-black uppercase tracking-tighter text-stone-900">Gerenciar Opcionais</h3>
+                <button
+                  onClick={() => {
+                    setShowOpcionalModal(false);
+                    setEditingGrupo(null);
+                    setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
+                  }}
+                  className="w-12 h-12 bg-white rounded-2xl shadow-md flex items-center justify-center hover:bg-red-50 hover:text-red-500 transition-all text-stone-400"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-8 space-y-8">
+                <style>{modalStyles}</style>
+                {/* Formulário de Grupo */}
+                <div className="bg-orange-50/50 p-6 rounded-[2rem] border border-orange-100 space-y-4">
+                  <h4 className="text-xs font-black uppercase text-orange-600 px-2">
+                    {editingGrupo ? 'Editar Grupo' : 'Novo Grupo de Escolha'}
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Nome (Ex: Escolha o Feijão)</label>
+                      <input
+                        type="text"
+                        value={grupoForm.nome}
+                        onChange={e => setGrupoForm({ ...grupoForm, nome: e.target.value })}
+                        className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Min.</label>
+                        <input
+                          type="number"
+                          value={grupoForm.minSelecao}
+                          onChange={e => setGrupoForm({ ...grupoForm, minSelecao: parseInt(e.target.value) })}
+                          className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase text-stone-400 ml-3">Max.</label>
+                        <input
+                          type="number"
+                          value={grupoForm.maxSelecao}
+                          onChange={e => setGrupoForm({ ...grupoForm, maxSelecao: parseInt(e.target.value) })}
+                          className="w-full p-4 bg-white rounded-2xl border border-transparent focus:border-orange-500 outline-none font-bold shadow-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveGrupo}
+                      className="flex-1 bg-stone-900 text-white font-black uppercase text-[10px] py-4 rounded-2xl hover:bg-orange-600 transition-all shadow-lg active:scale-95"
+                    >
+                      {editingGrupo ? 'Atualizar Grupo' : 'Cadastrar Grupo'}
+                    </button>
+                    {editingGrupo && (
+                      <button
+                        onClick={() => {
+                          setEditingGrupo(null);
+                          setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
+                        }}
+                        className="p-4 bg-white text-stone-400 rounded-2xl hover:text-red-500 shadow-sm transition-all"
+                      >
+                        <i className="fas fa-undo"></i>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Lista de Grupos */}
+                <div className="space-y-4">
+                  <h4 className="text-xs font-black uppercase text-stone-400 px-2 tracking-widest">Grupos Existentes</h4>
+                  <div className="space-y-4">
+                    {gruposOpcionais.map(g => (
+                      <div key={g.id} className="bg-stone-50 rounded-[2.5rem] border border-stone-100 p-6 space-y-4 overflow-hidden">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <p className="text-sm font-black uppercase text-stone-900">{g.nome}</p>
+                            <p className="text-[9px] font-bold text-stone-400 uppercase">Min: {g.minSelecao} | Max: {g.maxSelecao}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                setEditingGrupo(g);
+                                setGrupoForm({ nome: g.nome, minSelecao: g.minSelecao, maxSelecao: g.maxSelecao });
+                              }}
+                              className="w-8 h-8 rounded-full bg-white text-stone-400 hover:text-orange-500 shadow-sm flex items-center justify-center transition-all"
+                            >
+                              <i className="fas fa-edit text-[10px]"></i>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteGrupo(g.id)}
+                              className="w-8 h-8 rounded-full bg-white text-stone-400 hover:text-red-500 shadow-sm flex items-center justify-center transition-all"
+                            >
+                              <i className="fas fa-trash text-[10px]"></i>
                             </button>
                           </div>
-                        ))}
+                        </div>
 
-                        {isAddingOpcional === g.id ? (
-                          <div className="pt-2 flex flex-col gap-2">
-                            <div className="grid grid-cols-2 gap-2">
-                              <input
-                                type="text"
-                                placeholder="Nome (Ex: Feijão Preto)"
-                                value={opcionalForm.nome}
-                                onChange={e => setOpcionalForm({ ...opcionalForm, nome: e.target.value })}
-                                className="p-4 bg-white rounded-xl border-none outline-none text-[10px] font-bold shadow-sm"
-                              />
-                              <input
-                                type="number"
-                                placeholder="Preço (0.00)"
-                                value={opcionalForm.precoAdicional}
-                                onChange={e => setOpcionalForm({ ...opcionalForm, precoAdicional: parseFloat(e.target.value) })}
-                                className="p-4 bg-white rounded-xl border-none outline-none text-[10px] font-bold shadow-sm"
-                              />
+                        {/* Opcionais do Grupo */}
+                        <div className="pl-4 border-l-2 border-stone-200 space-y-2">
+                          {g.opcionais.map(opt => (
+                            <div key={opt.id} className="flex justify-between items-center bg-white/50 p-2 rounded-xl group/opt">
+                              <div className="flex items-center gap-3">
+                                {opt.imageUrl ? (
+                                  <img src={opt.imageUrl} alt={opt.nome} className="w-8 h-8 rounded-lg object-cover shadow-sm bg-stone-100" />
+                                ) : (
+                                  <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center text-stone-300">
+                                    <i className="fas fa-image text-[10px]"></i>
+                                  </div>
+                                )}
+                                <span className={`text-[10px] font-bold uppercase ${opt.disponivel ? 'text-stone-600' : 'text-stone-300 line-through'}`}>
+                                  {opt.nome} (+ R$ {opt.precoAdicional.toFixed(2)})
+                                </span>
+                                {opt.gerenciarEstoque && (
+                                  <span className={`text-[8px] font-black px-2 py-0.5 rounded-md uppercase ml-2 ${opt.estoqueAtual && opt.estoqueAtual > 0 ? 'bg-blue-50 text-blue-500' : 'bg-red-50 text-red-500'}`}>
+                                    Estoque: {opt.estoqueAtual}
+                                  </span>
+                                )}
+                                {!opt.disponivel && (
+                                  <span className="text-[7px] font-black bg-stone-100 text-stone-400 px-1.5 py-0.5 rounded-md uppercase ml-1">Indisponível</span>
+                                )}
+                              </div>
+                              <div className="flex gap-2 opacity-0 group-hover/opt:opacity-100 transition-all">
+                                <button
+                                  onClick={() => {
+                                    setEditingOpcional(opt);
+                                    setOpcionalForm({
+                                      nome: opt.nome,
+                                      precoAdicional: opt.precoAdicional,
+                                      disponivel: opt.disponivel,
+                                      imageUrl: opt.imageUrl || '',
+                                      gerenciarEstoque: opt.gerenciarEstoque || false,
+                                      estoqueAtual: opt.estoqueAtual || 0
+                                    });
+                                    setIsAddingOpcional(g.id);
+                                  }}
+                                  className="text-stone-300 hover:text-blue-500"
+                                >
+                                  <i className="fas fa-edit text-[10px]"></i>
+                                </button>
+                                <button
+                                  onClick={() => handleToggleOpcionalDisponibilidade(opt)}
+                                  className={`w-8 h-8 rounded-full shadow-sm flex items-center justify-center transition-all ${opt.disponivel ? 'bg-green-50 text-green-500 hover:bg-green-100' : 'bg-stone-50 text-stone-300 hover:bg-green-50 hover:text-green-500'}`}
+                                  title={opt.disponivel ? "Marcar como Indisponível" : "Marcar como Disponível"}
+                                >
+                                  <i className={`fas ${opt.disponivel ? 'fa-eye' : 'fa-eye-slash'} text-[10px]`}></i>
+                                </button>
+                                <button onClick={() => handleDeleteOpcional(opt.id)} className="text-stone-300 hover:text-red-500">
+                                  <i className="fas fa-times-circle text-[10px]"></i>
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleSaveOpcional(g.id)}
-                                className="flex-1 bg-green-500 text-white font-black uppercase text-[9px] py-2 rounded-xl"
-                              >
-                                Adicionar
-                              </button>
-                              <button
-                                onClick={() => setIsAddingOpcional(false)}
-                                className="px-4 bg-stone-200 text-stone-500 font-black uppercase text-[9px] py-2 rounded-xl"
-                              >
-                                Cancelar
-                              </button>
+                          ))}
+
+                          {isAddingOpcional === g.id ? (
+                            <div className="pt-2 flex flex-col gap-3 p-4 bg-white/50 rounded-2xl border border-stone-100 shadow-sm animate-fade-in">
+                              <h4 className="text-[9px] font-black uppercase text-stone-400 px-2 tracking-widest">
+                                {editingOpcional ? 'Editando Opcional' : 'Novo Opcional'}
+                              </h4>
+                              <div className="flex flex-col md:flex-row gap-4 items-start">
+                                <div className="relative group">
+                                  <div className="w-20 h-20 rounded-2xl bg-stone-100 border border-stone-200 flex items-center justify-center overflow-hidden shadow-inner cursor-pointer">
+                                    {opcionalForm.imageUrl ? (
+                                      <img src={opcionalForm.imageUrl} className="w-full h-full object-cover" />
+                                    ) : (
+                                      <i className="fas fa-camera text-stone-300 text-xl"></i>
+                                    )}
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      className="absolute inset-0 opacity-0 cursor-pointer"
+                                      onChange={(e) => {
+                                        const file = e.target.files?.[0];
+                                        if (file) {
+                                          const reader = new FileReader();
+                                          reader.onloadend = () => {
+                                            setOpcionalForm({ ...opcionalForm, imageUrl: reader.result as string });
+                                          };
+                                          reader.readAsDataURL(file);
+                                        }
+                                      }}
+                                    />
+                                  </div>
+                                  {opcionalForm.imageUrl && (
+                                    <button
+                                      onClick={() => setOpcionalForm({ ...opcionalForm, imageUrl: '' })}
+                                      className="absolute -top-2 -right-2 bg-red-500 text-white w-6 h-6 rounded-full text-[8px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-md"
+                                    >
+                                      <i className="fas fa-times"></i>
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="flex-1 w-full grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <div className="col-span-1 sm:col-span-2">
+                                    <input
+                                      type="text"
+                                      placeholder="Nome (Ex: Feijão Preto)"
+                                      value={opcionalForm.nome}
+                                      onChange={e => setOpcionalForm({ ...opcionalForm, nome: e.target.value })}
+                                      className="w-full p-3 bg-white rounded-xl border border-stone-100 outline-none text-[10px] font-black uppercase text-stone-800 shadow-sm focus:border-orange-500"
+                                    />
+                                  </div>
+                                  <input
+                                    type="number"
+                                    placeholder="Preço (0.00)"
+                                    value={opcionalForm.precoAdicional}
+                                    onChange={e => setOpcionalForm({ ...opcionalForm, precoAdicional: parseFloat(e.target.value) })}
+                                    className="w-full p-3 bg-white rounded-xl border border-stone-100 outline-none text-[10px] font-black uppercase text-orange-600 shadow-sm focus:border-orange-500"
+                                  />
+                                  <div className="col-span-1 sm:col-span-2 flex items-center gap-4 bg-white/30 p-2 rounded-xl border border-stone-100">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={opcionalForm.gerenciarEstoque}
+                                        onChange={e => setOpcionalForm({ ...opcionalForm, gerenciarEstoque: e.target.checked })}
+                                        className="w-4 h-4 accent-orange-500 rounded"
+                                      />
+                                      <span className="text-[9px] font-black uppercase text-stone-400">Controlar Estoque?</span>
+                                    </label>
+                                    {opcionalForm.gerenciarEstoque && (
+                                      <div className="flex-1 flex items-center gap-2">
+                                        <span className="text-[9px] font-black uppercase text-stone-400">Qtd:</span>
+                                        <input
+                                          type="number"
+                                          value={opcionalForm.estoqueAtual}
+                                          onChange={e => setOpcionalForm({ ...opcionalForm, estoqueAtual: parseInt(e.target.value) })}
+                                          className="w-full p-2 bg-white rounded-lg border border-stone-100 outline-none text-[10px] font-black text-blue-600"
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleSaveOpcional(g.id)}
+                                  className={`flex-1 ${editingOpcional ? 'bg-blue-600' : 'bg-green-500'} text-white font-black uppercase text-[9px] py-2 rounded-xl transition-colors`}
+                                >
+                                  {editingOpcional ? 'Atualizar' : 'Adicionar'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsAddingOpcional(false);
+                                    setEditingOpcional(null);
+                                    setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true, imageUrl: '', gerenciarEstoque: false, estoqueAtual: 0 });
+                                  }}
+                                  className="px-4 bg-stone-200 text-stone-500 font-black uppercase text-[9px] py-2 rounded-xl"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setIsAddingOpcional(g.id);
-                              setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true });
-                            }}
-                            className="text-[9px] font-black uppercase text-stone-400 hover:text-stone-600 flex items-center gap-2 pt-1"
-                          >
-                            <i className="fas fa-plus-circle"></i> Novo Item Opcional
-                          </button>
-                        )}
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setIsAddingOpcional(g.id);
+                                setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true, imageUrl: '', gerenciarEstoque: false, estoqueAtual: 0 });
+                              }}
+                              className="text-[9px] font-black uppercase text-stone-400 hover:text-stone-600 flex items-center gap-2 pt-1"
+                            >
+                              <i className="fas fa-plus-circle"></i> Novo Item Opcional
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                  {gruposOpcionais.length === 0 && (
-                    <p className="text-center py-20 text-[10px] font-bold text-stone-300 uppercase">Nenhum grupo cadastrado</p>
-                  )}
+                    ))}
+                    {gruposOpcionais.length === 0 && (
+                      <p className="text-center py-20 text-[10px] font-bold text-stone-300 uppercase">Nenhum grupo cadastrado</p>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
+        )}
+      </div>
+
+      {/* CONTAINER INVISÍVEL PARA GERAÇÃO DA ARTE DO CARDÁPIO */}
+      <div
+        id="menu-poster"
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          top: 0,
+          width: '600px',
+          padding: '40px',
+          background: '#1c1917', // stone-900
+          display: 'none', // O onClick vai mudar para flex
+          flexDirection: 'column',
+          alignItems: 'center',
+          opacity: 0,
+          zIndex: -1,
+          pointerEvents: 'none'
+        }}
+      >
+        <div className="flex flex-col items-center mb-12 text-center w-full">
+          {config?.logoUrl ? (
+            <img
+              src={config.logoUrl}
+              style={{ border: '4px solid #f97316' }}
+              className="w-24 h-24 rounded-3xl object-cover mb-6"
+              alt="Logo"
+            />
+          ) : (
+            <div style={{ background: '#f97316' }} className="w-24 h-24 rounded-3xl flex items-center justify-center mb-6">
+              <i style={{ color: '#ffffff' }} className="fas fa-utensils text-4xl"></i>
+            </div>
+          )}
+          <h2 style={{ color: '#ffffff' }} className="text-4xl font-black uppercase tracking-tighter leading-none mb-2">Cardápio do Dia</h2>
+          <p style={{ color: '#f97316' }} className="font-black uppercase tracking-[0.3em] text-sm">{config?.businessName || 'Panelas da Vanda'}</p>
+          <div style={{ background: '#f97316' }} className="w-20 h-1 mt-6 rounded-full"></div>
         </div>
-      )}
-    </div>
+
+        <div className="w-full space-y-6">
+          {currentDayMenu.length === 0 ? (
+            <div style={{ border: '2px dashed #292524' }} className="text-center py-20 rounded-[3rem]">
+              <p style={{ color: '#78716c' }} className="font-bold uppercase tracking-widest text-xs">Menu em manutenção</p>
+            </div>
+          ) : currentDayMenu.map(item => (
+            <div key={item.id} style={{ background: 'rgba(41, 37, 36, 0.5)', border: '1px solid #292524' }} className="flex items-center gap-6 p-6 rounded-[2.5rem]">
+              {item.imageUrl && (
+                <img
+                  src={item.imageUrl}
+                  className="w-20 h-20 rounded-2xl object-cover"
+                  alt=""
+                />
+              )}
+              <div className="flex-1">
+                <h4 style={{ color: '#ffffff' }} className="font-black uppercase text-lg leading-tight mb-1">{item.name}</h4>
+                <p style={{ color: '#a8a29e' }} className="text-xs font-bold leading-tight line-clamp-2">{item.description}</p>
+              </div>
+              <div className="text-right">
+                <span style={{ background: '#f97316', color: '#ffffff' }} className="px-4 py-2 rounded-xl font-black text-sm">
+                  R$ {item.price.toFixed(2)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-16 text-center w-full border-t border-white/10 pt-8">
+          <p style={{ color: '#a8a29e' }} className="font-black uppercase tracking-[0.2em] text-[10px] mb-2">Peça agora em:</p>
+          <p style={{ color: '#ffffff' }} className="font-black text-2xl tracking-tight uppercase">
+            {config?.businessName || 'Panelas da Vanda'}
+          </p>
+        </div>
+      </div>
+    </div >
   );
 };
 

@@ -1,0 +1,19 @@
+import React from 'react';
+
+interface SkeletonProps {
+    className?: string;
+    variant?: 'rect' | 'circle' | 'text';
+}
+
+const Skeleton: React.FC<SkeletonProps> = ({ className = '', variant = 'rect' }) => {
+    const baseClasses = 'bg-stone-200 animate-pulse';
+    const variantClasses = {
+        rect: 'rounded-2xl',
+        circle: 'rounded-full',
+        text: 'rounded-md h-4 w-full',
+    };
+
+    return <div className={`${baseClasses} ${variantClasses[variant]} ${className}`}></div>;
+};
+
+export default Skeleton;

@@ -29,6 +29,9 @@ export interface Opcional {
   nome: string;
   precoAdicional: number;
   disponivel: boolean;
+  imageUrl?: string;
+  gerenciarEstoque?: boolean;
+  estoqueAtual?: number;
 }
 
 export interface GrupoOpcional {
@@ -97,6 +100,9 @@ export interface AppConfig {
   printMode?: 'Apenas PDF' | 'PDF + Impressão';
   mercadoPagoEnabled?: boolean;
   mercadoPagoPublicKey?: string;
+  hasAdminPassword?: boolean;
+  instagramUrl?: string;
+  facebookUrl?: string;
 }
 
 export interface CashMovement {
