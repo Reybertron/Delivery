@@ -24,6 +24,7 @@ interface CartSectionProps {
     selectedNeighborhoodFee: number;
     total: number;
     isBusinessOpen: boolean;
+    isProcessing: boolean;
     onCheckout: () => void;
     phoneInputRef: React.RefObject<HTMLInputElement | null>;
 }
@@ -41,6 +42,7 @@ const CartSection: React.FC<CartSectionProps> = ({
     selectedNeighborhoodFee,
     total,
     isBusinessOpen,
+    isProcessing,
     onCheckout,
     phoneInputRef
 }) => {
@@ -194,12 +196,16 @@ const CartSection: React.FC<CartSectionProps> = ({
 
                     <button
                         onClick={onCheckout}
-                        disabled={cart.length === 0 || !isBusinessOpen}
-                        className={`w-full py-6 rounded-[2rem] font-black shadow-2xl transition-all flex items-center justify-center gap-4 text-lg ${cart.length === 0 || !isBusinessOpen ? 'bg-stone-100 text-stone-300 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600 shadow-green-200 hover:-translate-y-1'
+                        disabled={cart.length === 0 || !isBusinessOpen || isProcessing}
+                        className={`w-full py-6 rounded-[2rem] font-black shadow-2xl transition-all flex items-center justify-center gap-4 text-lg ${cart.length === 0 || !isBusinessOpen || isProcessing ? 'bg-stone-100 text-stone-300 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600 shadow-green-200 hover:-translate-y-1'
                             }`}
                     >
-                        <i className="fab fa-whatsapp text-2xl"></i>
-                        {isBusinessOpen ? 'FECHAR PEDIDO' : 'FORA DE HORÁRIO'}
+                        {isProcessing ? (
+                            <i className="fas fa-spinner animate-spin text-2xl"></i>
+                        ) : (
+                            <i className="fab fa-whatsapp text-2xl"></i>
+                        )}
+                        {isProcessing ? 'PROCESSANDO...' : isBusinessOpen ? 'FECHAR PEDIDO' : 'FORA DE HORÁRIO'}
                     </button>
                 </div>
             </div>

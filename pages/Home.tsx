@@ -22,6 +22,7 @@ const Home: React.FC = () => {
   const [searchPhone, setSearchPhone] = useState(localStorage.getItem('last_track_phone') || '');
   const [trackedOrder, setTrackedOrder] = useState<Order | null>(null);
   const [isSearchingOrder, setIsSearchingOrder] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('Entrega');
@@ -198,6 +199,7 @@ const Home: React.FC = () => {
     if (!phone || !name || cart.length === 0) return alert('Por favor, preencha seu Nome, WhatsApp e escolha os itens!');
     if (deliveryMethod === 'Entrega' && (!street || !number || !neighborhood)) return alert('Para entrega, precisamos do endereço completo e bairro!');
 
+    setIsProcessing(true);
     try {
       const cleanPhone = phone.replace(/\D/g, '');
       await db.saveCustomer({
@@ -232,6 +234,28 @@ const Home: React.FC = () => {
       setSearchPhone(cleanPhone);
       handleTrackOrder(cleanPhone);
 
+      // --- INTEGRAÇÃO MERCADO PAGO ---
+      if (['Pix', 'Cartão'].includes(payment)) {
+        try {
+          const { init_point } = await db.checkoutMercadoPago({
+            orderItems: cart,
+            total,
+            deliveryFee: selectedNeighborhoodFee,
+            customerInfo: { ...customerInfo, phone: cleanPhone }
+          });
+
+          if (init_point) {
+            // Abre o checkout do Mercado Pago
+            window.location.href = init_point;
+            return; // Interrompe para não abrir o WhatsApp ainda (ou o cliente volta do MP)
+          }
+        } catch (mpError) {
+          console.error("Erro ao gerar pagamento MP:", mpError);
+          // Se falhar o MP, podemos deixar seguir para o WhatsApp como fallback ou avisar
+          alert("Erro ao gerar link de pagamento, mas seu pedido foi registrado. Vamos prosseguir via WhatsApp.");
+        }
+      }
+
       setCart([]);
       setCustomerInfo({ phone: '', name: '', cep: '', street: '', number: '', complement: '', neighborhood: '', payment: 'Pix', observations: '' });
       setDeliveryMethod('Entrega');
@@ -239,6 +263,8 @@ const Home: React.FC = () => {
       if (config) window.open(generateWhatsAppLink(order, config), '_blank');
     } catch (e: any) {
       alert("Erro ao processar: " + e.message);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -361,6 +387,7 @@ const Home: React.FC = () => {
           selectedNeighborhoodFee={selectedNeighborhoodFee}
           total={total}
           isBusinessOpen={isBusinessOpen}
+          isProcessing={isProcessing}
           onCheckout={handleCheckout}
           phoneInputRef={phoneInputRef}
         />

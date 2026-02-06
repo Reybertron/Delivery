@@ -3,6 +3,15 @@ import { Marmita, Neighborhood, Customer, Order, AppConfig, OrderStatus, CashMov
 import { supabase } from '../lib/supabase';
 
 export const db = {
+  // MERCADO PAGO
+  checkoutMercadoPago: async (orderData: any) => {
+    const { data, error } = await supabase.functions.invoke('mercadopago-checkout', {
+      body: orderData
+    });
+    if (error) throw error;
+    return data;
+  },
+
   // CONFIGURAÇÕES
   getConfig: async (): Promise<AppConfig> => {
     const { data, error } = await supabase

@@ -16,11 +16,7 @@ const modalStyles = `
   }
 `;
 
-// Fallback para toast (caso não haja biblioteca instalada)
-const toast = {
-  success: (msg: string) => console.log('Success:', msg),
-  error: (msg: string) => console.error('Error:', msg),
-};
+// O toast agora é gerenciado via estado dentro do componente para permitir UI customizada
 
 type AdminTab = 'pedidos' | 'caixa' | 'menu' | 'bairros' | 'clientes' | 'entregadores' | 'marketing' | 'config';
 
@@ -121,13 +117,20 @@ const Admin: React.FC = () => {
   const toggleLocalPrinter = (val: boolean) => {
     setIsLocalPrinter(val);
     localStorage.setItem('is_local_printer', val.toString());
-    if (val) toast.success('Este dispositivo agora é um Terminal de Impressão!');
+    if (val) showToast('Este dispositivo agora é um Terminal de Impressão!');
   };
   const [opcionalForm, setOpcionalForm] = useState<Omit<Opcional, 'id'>>({
     nome: '', precoAdicional: 0, disponivel: true, imageUrl: '', gerenciarEstoque: false, estoqueAtual: 0
   });
   const [isAddingOpcional, setIsAddingOpcional] = useState<string | false>(false);
   const [editingOpcional, setEditingOpcional] = useState<Opcional | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [toast, setToast] = useState<{ msg: string, type: 'success' | 'error' } | null>(null);
+
+  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   useEffect(() => {
     const init = async () => {
@@ -330,12 +333,16 @@ const Admin: React.FC = () => {
 
   const handleSaveMovement = async () => {
     if (movForm.valor <= 0) return alert("Digite um valor válido");
+    setIsSaving(true);
     try {
       await db.addCashMovement(movForm);
       setMovForm({ tipo: 'Saída', categoria: 'Insumos', descricao: '', valor: 0 });
-      refreshData();
+      await refreshData();
+      showToast("Movimentação registrada!");
     } catch (e) {
-      alert("Erro ao salvar movimentação");
+      showToast("Erro ao salvar movimentação", "error");
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -517,67 +524,78 @@ const Admin: React.FC = () => {
 
   const handleSaveMarmita = async () => {
     if (!marmitaForm.name || marmitaForm.price <= 0) return alert('Campos inválidos');
+    setIsSaving(true);
     try {
       if (editingMarmita) await db.updateMarmita(editingMarmita.id, marmitaForm);
       else await db.saveMarmita(marmitaForm);
       setMarmitaForm({ name: '', description: '', price: 0, day: DayOfWeek.MONDAY, category: 'Executiva', imageUrl: '', prepTime: '', available: true });
       setEditingMarmita(null);
-      refreshData();
-      alert("Prato salvo com sucesso!");
-    } catch (e) { alert("Erro ao salvar marmita"); }
+      await refreshData();
+      showToast("Prato salvo com sucesso!");
+    } catch (e) { showToast("Erro ao salvar marmita", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleSaveBairro = async () => {
     if (!bairroForm.name) return alert('Nome do bairro obrigatório');
+    setIsSaving(true);
     try {
       await db.saveBairro(bairroForm);
       setBairroForm({ name: '', deliveryFee: 0 });
       setIsEditingBairro(false);
-      refreshData();
-      alert("Taxa atualizada!");
-    } catch (e) { alert("Erro ao salvar bairro"); }
+      await refreshData();
+      showToast("Taxa atualizada!");
+    } catch (e) { showToast("Erro ao salvar bairro", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleSaveCustomer = async () => {
     if (!editingCustomer) return;
+    setIsSaving(true);
     try {
       await db.saveCustomer(editingCustomer);
       setEditingCustomer(null);
-      refreshData();
-      alert("Dados do cliente atualizados com sucesso!");
-    } catch (e) { alert("Erro ao atualizar cliente"); }
+      await refreshData();
+      showToast("Dados do cliente atualizados!");
+    } catch (e) { showToast("Erro ao atualizar cliente", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleSaveConfig = async () => {
     if (!config) return;
+    setIsSaving(true);
     try {
       await db.saveConfig(config);
-      alert("Configurações salvas!");
-      window.location.reload();
-    } catch (e) { alert("Erro ao salvar configurações"); }
+      showToast("Configurações salvas!");
+      setTimeout(() => window.location.reload(), 1000);
+    } catch (e) { showToast("Erro ao salvar configurações", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleSaveDeliverer = async () => {
     if (!delivererForm.name || !delivererForm.phone) return alert('Nome e telefone são obrigatórios');
+    setIsSaving(true);
     try {
       if (editingDeliverer) {
         await db.updateDeliverer(editingDeliverer.id, delivererForm);
-        alert("Entregador atualizado!");
+        showToast("Entregador atualizado!");
       } else {
         await db.saveDeliverer(delivererForm);
-        alert("Entregador cadastrado!");
+        showToast("Entregador cadastrado!");
       }
       setDelivererForm({
         name: '', phone: '', cpf: '', vehicleType: 'Moto', vehicleModel: '',
         vehiclePlate: '', vehicleColor: '', status: 'Disponível', maxOrders: 3, photoUrl: '', isActive: true, password: ''
       });
       setEditingDeliverer(null);
-      refreshData();
-    } catch (e) { alert("Erro ao salvar entregador"); }
+      await refreshData();
+    } catch (e) { showToast("Erro ao salvar entregador", "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleSaveGrupo = async () => {
     if (!grupoForm.nome) return alert('Nome do grupo é obrigatório');
+    setIsSaving(true);
     try {
       if (editingGrupo) {
         await db.updateGrupoOpcional(editingGrupo.id, grupoForm);
@@ -587,7 +605,9 @@ const Admin: React.FC = () => {
       setGrupoForm({ nome: '', minSelecao: 0, maxSelecao: 1 });
       setEditingGrupo(null);
       await refreshData();
-    } catch (e: any) { alert("Erro ao salvar grupo: " + (e.message || "Erro desconhecido")); }
+      showToast("Grupo salvo com sucesso!");
+    } catch (e: any) { showToast("Erro ao salvar grupo: " + (e.message || "Erro desconhecido"), "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleDeleteGrupo = async (id: string) => {
@@ -600,17 +620,20 @@ const Admin: React.FC = () => {
 
   const handleSaveOpcional = async (grupoId: string) => {
     if (!opcionalForm.nome) return alert('Nome do opcional é obrigatório');
+    setIsSaving(true);
     try {
       if (editingOpcional) {
         await db.updateOpcional(editingOpcional.id, opcionalForm);
       } else {
         await db.saveOpcional(grupoId, opcionalForm);
       }
-      setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true, imageUrl: '' });
+      setOpcionalForm({ nome: '', precoAdicional: 0, disponivel: true, imageUrl: '', gerenciarEstoque: false, estoqueAtual: 0 });
       setIsAddingOpcional(false);
       setEditingOpcional(null);
       await refreshData();
-    } catch (e: any) { alert("Erro ao salvar opcional: " + (e.message || "Erro desconhecido")); }
+      showToast("Opcional salvo!");
+    } catch (e: any) { showToast("Erro ao salvar opcional: " + (e.message || "Erro desconhecido"), "error"); }
+    finally { setIsSaving(false); }
   };
 
   const handleDeleteOpcional = async (id: string) => {
@@ -1263,10 +1286,11 @@ const Admin: React.FC = () => {
                     </div>
                     <button
                       onClick={handleSaveMovement}
-                      className="w-full bg-stone-900 text-white py-6 rounded-3xl text-[11px] font-black uppercase tracking-widest hover:bg-orange-600 transition-all shadow-xl hover:shadow-orange-200 active:scale-95 flex items-center justify-center gap-3"
+                      disabled={isSaving}
+                      className={`w-full ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-orange-600'} text-white py-6 rounded-3xl text-[11px] font-black uppercase tracking-widest transition-all shadow-xl ${!isSaving && 'active:scale-95'} flex items-center justify-center gap-3`}
                     >
-                      <i className="fas fa-check-circle"></i>
-                      Efetivar Lançamento
+                      {isSaving ? <i className="fas fa-spinner animate-spin"></i> : <i className="fas fa-check-circle"></i>}
+                      {isSaving ? 'PROCESSANDO...' : 'Efetivar Lançamento'}
                     </button>
                   </div>
                 </div>
@@ -1407,9 +1431,16 @@ const Admin: React.FC = () => {
                   </label>
                 </div>
 
-                <button onClick={handleSaveMarmita} className="w-full bg-stone-900 text-white py-7 rounded-[2.5rem] font-black uppercase tracking-[0.2em] shadow-2xl hover:bg-orange-600 transition-all transform hover:scale-[1.02] active:scale-95 mt-4 flex items-center justify-center gap-4 text-xs">
-                  <i className={`fas ${editingMarmita ? 'fa-save' : 'fa-plus-circle'} text-xl`}></i>
-                  {editingMarmita ? 'Salvar Alterações' : 'Adicionar ao Cardápio'}
+                <button
+                  onClick={handleSaveMarmita}
+                  disabled={isSaving}
+                  className={`w-full ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-orange-600'} text-white py-7 rounded-[2.5rem] font-black uppercase tracking-[0.2em] shadow-2xl transition-all transform ${!isSaving && 'hover:scale-[1.02] active:scale-95'} mt-4 flex items-center justify-center gap-4 text-xs`}
+                >
+                  {isSaving ? (
+                    <><i className="fas fa-spinner animate-spin"></i> SALVANDO...</>
+                  ) : (
+                    <><i className="fas fa-cookie-bite text-xl"></i> {editingMarmita ? 'Atualizar Prato' : 'Confirmar e Publicar'}</>
+                  )}
                 </button>
 
                 <div className="pt-6 border-t-2 border-white">
@@ -1545,9 +1576,16 @@ const Admin: React.FC = () => {
                   <label className="text-[10px] font-black uppercase text-stone-400 ml-4">Taxa de Entrega (R$)</label>
                   <input type="number" placeholder="0.00" value={bairroForm.deliveryFee} onChange={e => setBairroForm({ ...bairroForm, deliveryFee: parseFloat(e.target.value) })} className="w-full p-6 rounded-3xl border-2 border-white outline-none font-black focus:border-orange-500 shadow-inner" />
                 </div>
-                <button onClick={handleSaveBairro} className="w-full bg-stone-900 text-white py-8 rounded-[2.5rem] font-black uppercase shadow-2xl hover:bg-orange-600 transition-all text-xs tracking-[0.2em] flex items-center justify-center gap-4 hover:scale-[1.02] active:scale-95">
-                  <i className="fas fa-truck-ramp-box text-xl"></i>
-                  {isEditingBairro ? 'Atualizar Taxa' : 'Registrar Bairro'}
+                <button
+                  onClick={handleSaveBairro}
+                  disabled={isSaving}
+                  className={`w-full ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-orange-600'} text-white py-8 rounded-[2.5rem] font-black uppercase shadow-2xl transition-all text-xs tracking-[0.2em] flex items-center justify-center gap-4 ${!isSaving && 'hover:scale-[1.02] active:scale-95'}`}
+                >
+                  {isSaving ? (
+                    <><i className="fas fa-spinner animate-spin"></i> PROCESSANDO...</>
+                  ) : (
+                    <><i className="fas fa-truck-ramp-box text-xl"></i> {isEditingBairro ? 'Atualizar Taxa' : 'Registrar Bairro'}</>
+                  )}
                 </button>
               </div>
             </div>
@@ -1763,9 +1801,16 @@ const Admin: React.FC = () => {
                 </div>
               </div>
 
-              <button onClick={handleSaveConfig} className="md:col-span-2 w-full bg-stone-900 text-white py-8 rounded-[2.5rem] font-black uppercase shadow-2xl hover:bg-orange-600 transition-all mt-8 text-xl tracking-[0.2em] flex items-center justify-center gap-6 group hover:scale-[1.01] active:scale-95">
-                <i className="fas fa-save text-3xl group-hover:scale-110 transition-transform"></i>
-                Efetivar Configurações
+              <button
+                onClick={handleSaveConfig}
+                disabled={isSaving}
+                className={`md:col-span-2 w-full ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-orange-600'} text-white py-8 rounded-[2.5rem] font-black uppercase shadow-2xl transition-all mt-8 text-xl tracking-[0.2em] flex items-center justify-center gap-6 group ${!isSaving && 'hover:scale-[1.01] active:scale-95'}`}
+              >
+                {isSaving ? (
+                  <><i className="fas fa-spinner animate-spin text-3xl"></i> SALVANDO...</>
+                ) : (
+                  <><i className="fas fa-save text-3xl group-hover:scale-110 transition-transform"></i> Efetivar Configurações</>
+                )}
               </button>
             </div>
           </div>
@@ -1900,9 +1945,10 @@ const Admin: React.FC = () => {
                     <div className="pt-4 flex gap-3">
                       <button
                         onClick={handleSaveDeliverer}
-                        className="flex-1 bg-stone-900 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-green-600 transition-all shadow-lg hover:scale-[1.02] active:scale-95"
+                        disabled={isSaving}
+                        className={`flex-1 ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-green-600'} text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest transition-all shadow-lg ${!isSaving && 'hover:scale-[1.02] active:scale-95'}`}
                       >
-                        {editingDeliverer ? 'Atualizar' : 'Cadastrar'}
+                        {isSaving ? <i className="fas fa-spinner animate-spin"></i> : (editingDeliverer ? 'Atualizar' : 'Cadastrar')}
                       </button>
                       {editingDeliverer && (
                         <button
@@ -2086,7 +2132,7 @@ const Admin: React.FC = () => {
                         link.href = dataUrl;
                         link.click();
 
-                        toast.success('Imagem gerada e salva no banco de dados!');
+                        showToast('Imagem gerada e salva no banco de dados!');
                       } catch (err) {
                         console.error("Erro na geração:", err);
                         alert("Houve um erro na captura da imagem. Verifique se há pratos ativos no cardápio de hoje.");
@@ -2292,7 +2338,13 @@ const Admin: React.FC = () => {
                 </div>
 
                 <div className="flex gap-4 mt-10">
-                  <button onClick={handleSaveCustomer} className="flex-1 bg-stone-900 text-white py-6 rounded-[2rem] font-black uppercase text-xs tracking-[0.2em] hover:bg-green-600 transition-all shadow-2xl hover:scale-[1.02] active:scale-95">Salvar Alterações</button>
+                  <button
+                    onClick={handleSaveCustomer}
+                    disabled={isSaving}
+                    className={`flex-1 ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-green-600'} text-white py-6 rounded-[2rem] font-black uppercase text-xs tracking-[0.2em] transition-all shadow-2xl ${!isSaving && 'hover:scale-[1.02] active:scale-95'}`}
+                  >
+                    {isSaving ? <i className="fas fa-spinner animate-spin"></i> : 'Salvar Alterações'}
+                  </button>
                   <button onClick={() => setEditingCustomer(null)} className="flex-1 bg-stone-100 text-stone-400 py-6 rounded-[2rem] font-black uppercase text-[10px] tracking-widest">Cancelar</button>
                 </div>
               </div>
@@ -2345,6 +2397,16 @@ const Admin: React.FC = () => {
             </div>
           )
         }
+
+        {/* SISTEMA DE TOAST CUSTOMIZADO */}
+        {toast && (
+          <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-[1000] animate-modal-in">
+            <div className={`px-8 py-4 rounded-3xl shadow-2xl flex items-center gap-4 border ${toast.type === 'success' ? 'bg-green-500 border-green-400' : 'bg-red-500 border-red-400'} text-white`}>
+              <i className={`fas ${toast.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'} text-xl`}></i>
+              <span className="font-black uppercase text-xs tracking-widest">{toast.msg}</span>
+            </div>
+          </div>
+        )}
 
         <style>{`
         .animate-fade-in { animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
@@ -2444,9 +2506,10 @@ const Admin: React.FC = () => {
                   <div className="flex gap-2">
                     <button
                       onClick={handleSaveGrupo}
-                      className="flex-1 bg-stone-900 text-white font-black uppercase text-[10px] py-4 rounded-2xl hover:bg-orange-600 transition-all shadow-lg active:scale-95"
+                      disabled={isSaving}
+                      className={`flex-1 ${isSaving ? 'bg-stone-400 cursor-not-allowed' : 'bg-stone-900 hover:bg-orange-600'} text-white font-black uppercase text-[10px] py-4 rounded-2xl transition-all shadow-lg ${!isSaving && 'active:scale-95'}`}
                     >
-                      {editingGrupo ? 'Atualizar Grupo' : 'Cadastrar Grupo'}
+                      {isSaving ? <i className="fas fa-spinner animate-spin"></i> : (editingGrupo ? 'Atualizar Grupo' : 'Cadastrar Grupo')}
                     </button>
                     {editingGrupo && (
                       <button
@@ -2630,9 +2693,10 @@ const Admin: React.FC = () => {
                               <div className="flex gap-2">
                                 <button
                                   onClick={() => handleSaveOpcional(g.id)}
-                                  className={`flex-1 ${editingOpcional ? 'bg-blue-600' : 'bg-green-500'} text-white font-black uppercase text-[9px] py-2 rounded-xl transition-colors`}
+                                  disabled={isSaving}
+                                  className={`flex-1 ${isSaving ? 'bg-stone-400 cursor-not-allowed' : editingOpcional ? 'bg-blue-600' : 'bg-green-500'} text-white font-black uppercase text-[9px] py-2 rounded-xl transition-colors`}
                                 >
-                                  {editingOpcional ? 'Atualizar' : 'Adicionar'}
+                                  {isSaving ? <i className="fas fa-spinner animate-spin"></i> : (editingOpcional ? 'Atualizar' : 'Adicionar')}
                                 </button>
                                 <button
                                   onClick={() => {
