@@ -6,6 +6,7 @@ import Home from './pages/Home';
 import Admin from './pages/Admin';
 import DelivererLogin from './pages/DelivererLogin';
 import DelivererDashboard from './pages/DelivererDashboard';
+import PaymentSuccess from './pages/PaymentSuccess';
 import { isNative } from './lib/platform';
 import { db } from './services/database';
 import { AppConfig } from './types';
@@ -26,6 +27,7 @@ const App: React.FC = () => {
         <main className="flex-grow bg-stone-50 pb-20">
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/success" element={<PaymentSuccess />} />
             <Route path="/delivery/login" element={<DelivererLogin />} />
             <Route path="/delivery/dashboard" element={<DelivererDashboard />} />
             {!isNative && <Route path="/admin" element={<Admin />} />}

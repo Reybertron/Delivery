@@ -26,7 +26,8 @@
   ],
   "exclude": [
     "vite.config.ts",
-    "node_modules"
+    "node_modules",
+    "supabase"
   ],
   "references": [
     {

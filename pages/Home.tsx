@@ -23,6 +23,7 @@ const Home: React.FC = () => {
   const [trackedOrder, setTrackedOrder] = useState<Order | null>(null);
   const [isSearchingOrder, setIsSearchingOrder] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isTestMode, setIsTestMode] = useState(false);
 
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('Entrega');
@@ -60,6 +61,13 @@ const Home: React.FC = () => {
       DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY
     ];
     return daysMap[new Date().getDay()];
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('test') === 'true') {
+      setIsTestMode(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -224,8 +232,8 @@ const Home: React.FC = () => {
         items: cart,
         subtotal,
         total,
-        status: 'Pendente',
-        observations,
+        status: isTestMode ? 'Cancelado' : 'Pendente', // Marca como cancelado/teste para não poluir
+        observations: isTestMode ? `[TESTE] ${observations}` : observations,
         createdAt: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString()
       };
 
@@ -235,30 +243,36 @@ const Home: React.FC = () => {
       handleTrackOrder(cleanPhone);
 
       // --- INTEGRAÇÃO MERCADO PAGO ---
-      if (['Pix', 'Cartão'].includes(payment)) {
+      if (['Pix', 'Cartão'].includes(payment) && config?.mercadoPagoEnabled) {
         try {
-          const { init_point } = await db.checkoutMercadoPago({
+          const res = await db.checkoutMercadoPago({
             orderItems: cart,
             total,
             deliveryFee: selectedNeighborhoodFee,
             customerInfo: { ...customerInfo, phone: cleanPhone }
           });
 
-          if (init_point) {
-            // Abre o checkout do Mercado Pago
-            window.location.href = init_point;
-            return; // Interrompe para não abrir o WhatsApp ainda (ou o cliente volta do MP)
+          const paymentUrl = isTestMode ? (res.sandbox_point || res.init_point) : res.init_point;
+
+          if (paymentUrl) {
+            window.location.href = paymentUrl;
+            return;
           }
-        } catch (mpError) {
-          console.error("Erro ao gerar pagamento MP:", mpError);
-          // Se falhar o MP, podemos deixar seguir para o WhatsApp como fallback ou avisar
-          alert("Erro ao gerar link de pagamento, mas seu pedido foi registrado. Vamos prosseguir via WhatsApp.");
+        } catch (mpError: any) {
+          console.error("ERRO DETALHADO MP:", mpError);
+          let errorMsg = mpError.message;
+          alert(`Erro Mercado Pago: ${errorMsg}\n\nO pedido foi registrado localmente.`);
         }
       }
 
       setCart([]);
       setCustomerInfo({ phone: '', name: '', cep: '', street: '', number: '', complement: '', neighborhood: '', payment: 'Pix', observations: '' });
       setDeliveryMethod('Entrega');
+
+      if (isTestMode) {
+        alert("✅ PEDIDO DE TESTE REALIZADO! Em produção, o WhatsApp seria aberto agora.");
+        return;
+      }
 
       if (config) window.open(generateWhatsAppLink(order, config), '_blank');
     } catch (e: any) {
@@ -338,6 +352,19 @@ const Home: React.FC = () => {
 
       {/* Banner de Boas Vindas */}
       <div className="bg-orange-600 text-white p-6 rounded-[2rem] mb-8 flex flex-col md:flex-row justify-between items-center shadow-xl relative overflow-hidden">
+        {isTestMode && (
+          <div className="absolute inset-0 bg-yellow-400 z-50 flex items-center justify-center bg-opacity-95">
+            <div className="text-center">
+              <p className="text-orange-900 font-black text-2xl uppercase italic animate-pulse">🛠️ MODO DE TESTE ATIVO</p>
+              <button
+                onClick={() => window.location.href = '/'}
+                className="mt-2 bg-orange-900 text-white px-4 py-1 rounded-full text-[10px] font-bold"
+              >
+                SAIR
+              </button>
+            </div>
+          </div>
+        )}
         <div className="absolute top-0 right-0 opacity-10 transform translate-x-4 -translate-y-4">
           <i className="fas fa-utensils text-9xl"></i>
         </div>
@@ -390,6 +417,7 @@ const Home: React.FC = () => {
           isProcessing={isProcessing}
           onCheckout={handleCheckout}
           phoneInputRef={phoneInputRef}
+          config={config}
         />
       </div>
 

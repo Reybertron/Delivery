@@ -1,5 +1,5 @@
 import React from 'react';
-import { OrderItem, Neighborhood, DeliveryMethod } from '../../types';
+import { OrderItem, Neighborhood, DeliveryMethod, AppConfig } from '../../types';
 
 interface CartSectionProps {
     cart: OrderItem[];
@@ -27,6 +27,7 @@ interface CartSectionProps {
     isProcessing: boolean;
     onCheckout: () => void;
     phoneInputRef: React.RefObject<HTMLInputElement | null>;
+    config: AppConfig | null;
 }
 
 const CartSection: React.FC<CartSectionProps> = ({
@@ -44,7 +45,8 @@ const CartSection: React.FC<CartSectionProps> = ({
     isBusinessOpen,
     isProcessing,
     onCheckout,
-    phoneInputRef
+    phoneInputRef,
+    config
 }) => {
     return (
         <div className="lg:col-span-1">
@@ -152,7 +154,9 @@ const CartSection: React.FC<CartSectionProps> = ({
                     )}
 
                     <div className="pt-4">
-                        <p className="text-[10px] font-black uppercase text-stone-400 mb-3 tracking-widest text-center">Pagamento no Recebimento</p>
+                        <p className="text-[10px] font-black uppercase text-stone-400 mb-3 tracking-widest text-center">
+                            {config?.mercadoPagoEnabled ? 'Forma de Pagamento' : 'Pagamento no Recebimento'}
+                        </p>
                         <div className="grid grid-cols-3 gap-2">
                             {['Pix', 'Cartão', 'Dinheiro'].map(p => (
                                 <button
